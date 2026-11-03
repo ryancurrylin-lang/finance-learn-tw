@@ -1,0 +1,1835 @@
+import "server-only";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import { randomUUID } from "node:crypto";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { generateAccessCode } from "@/lib/accessCode";
+import { isLineSlug, lineIdForSlug } from "@/lib/lines";
+import { bankVersionOf, prePostBankVersion } from "@/lib/prePostQuestions";
+import type { SimKind } from "@/lib/sims/types";
+import type { StudentMode } from "@/lib/types";
+import { mergeProfile, type StudentProfile } from "@/lib/studentProfile";
+import type {
+  Student,
+  ModuleProgress,
+  SimulationRun,
+  CoachMessage,
+  LineTest,
+  LineCompletion,
+  ClassRoom,
+  ClassParticipant,
+  HistoricalPrice,
+  SimPortfolio,
+  LifeGameSave,
+  TaskResultRow,
+  DailyActivity,
+} from "@/lib/types";
+
+/**
+ * Persistence lives entirely on the server. Production uses Supabase
+ * (Postgres). For local development without credentials, an opt-in
+ * file-backed store (USE_DEV_STORE=1, dev only) lets the full flow be
+ * exercised end to end. With neither configured, calls throw
+ * BackendNotConfiguredError and the API routes return a clean 503.
+ */
+
+export class BackendNotConfiguredError extends Error {
+  constructor() {
+    super("Backend not configured");
+    this.name = "BackendNotConfiguredError";
+  }
+}
+
+export function isNotConfigured(e: unknown): e is BackendNotConfiguredError {
+  return e instanceof BackendNotConfiguredError;
+}
+
+type Backend = "supabase" | "dev" | "none";
+
+function backend(): Backend {
+  if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return "supabase";
+  }
+  if (
+    process.env.NODE_ENV !== "production" &&
+    process.env.USE_DEV_STORE === "1"
+  ) {
+    return "dev";
+  }
+  return "none";
+}
+
+export function isBackendConfigured(): boolean {
+  return backend() !== "none";
+}
+
+// --- Supabase client (lazy singleton) ---
+let _supabase: SupabaseClient | null = null;
+function supabase(): SupabaseClient {
+  if (!_supabase) {
+    _supabase = createClient(
+      process.env.SUPABASE_URL as string,
+      process.env.SUPABASE_SERVICE_ROLE_KEY as string,
+      { auth: { persistSession: false, autoRefreshToken: false } },
+    );
+  }
+  return _supabase;
+}
+
+export interface CreateStudentInput {
+  name: string;
+  school: string;
+  grade: string;
+}
+
+export interface CreateRunInput {
+  student_id: string;
+  line_slug: string;
+  // Names the SHAPE of outcome_summary, not the line. A line that replaces
+  // its simulation mints a new kind, so historical rows stay readable as what
+  // they actually are. See lib/sims/types.ts.
+  kind: SimKind;
+  rent_choice?: string | null; // First Salary sim only
+  savings_rate?: number | null; // First Salary sim only
+  spending_choices: Record<string, unknown>;
+  outcome_summary: Record<string, unknown>;
+}
+
+// Older dev-store rows predate line_slug; treat them as the flagship line.
+function withLineSlug(run: SimulationRun): SimulationRun {
+  return run.line_slug ? run : { ...run, line_slug: "qixin" };
+}
+
+// ---------------------------------------------------------------------------
+// Dev file store
+// ---------------------------------------------------------------------------
+interface DevData {
+  students: Student[];
+  module_progress: ModuleProgress[];
+  simulation_runs: SimulationRun[];
+  coach_messages: CoachMessage[];
+  line_tests: LineTest[];
+  class_rooms: ClassRoom[];
+  class_participants: ClassParticipant[];
+  historical_prices: HistoricalPrice[];
+  sim_portfolios: SimPortfolio[];
+  line_completions: LineCompletion[];
+  life_game_saves: LifeGameSave[];
+  task_results: TaskResultRow[];
+  daily_activity: DailyActivity[];
+}
+
+const DEV_FILE = path.join(process.cwd(), ".devstore.json");
+let devWriteChain: Promise<unknown> = Promise.resolve();
+
+async function devRead(): Promise<DevData> {
+  try {
+    const raw = await fs.readFile(DEV_FILE, "utf8");
+    const parsed = JSON.parse(raw) as DevData;
+    // Older dev-store files predate these fields — default them rather than
+    // requiring every existing local .devstore.json to be deleted.
+    parsed.line_tests = parsed.line_tests ?? [];
+    parsed.class_rooms = parsed.class_rooms ?? [];
+    parsed.class_participants = parsed.class_participants ?? [];
+    parsed.historical_prices = parsed.historical_prices ?? [];
+    parsed.sim_portfolios = parsed.sim_portfolios ?? [];
+    parsed.line_completions = parsed.line_completions ?? [];
+    parsed.life_game_saves = parsed.life_game_saves ?? [];
+    parsed.task_results = parsed.task_results ?? [];
+    parsed.daily_activity = parsed.daily_activity ?? [];
+    return parsed;
+  } catch {
+    return {
+      students: [],
+      module_progress: [],
+      simulation_runs: [],
+      coach_messages: [],
+      line_tests: [],
+      class_rooms: [],
+      class_participants: [],
+      historical_prices: [],
+      sim_portfolios: [],
+      line_completions: [],
+      life_game_saves: [],
+      task_results: [],
+      daily_activity: [],
+    };
+  }
+}
+
+// Serialize read-modify-write so concurrent requests don't clobber the file.
+function devMutate<T>(fn: (data: DevData) => Promise<T> | T): Promise<T> {
+  const run = devWriteChain.then(async () => {
+    const data = await devRead();
+    const result = await fn(data);
+    // Write then rename (atomic): a read during the write never sees a
+    // half-written file (an empty store, so "no session").
+    const tmp = `${DEV_FILE}.${process.pid}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify(data, null, 2), "utf8");
+    await fs.rename(tmp, DEV_FILE);
+    return result;
+  });
+  devWriteChain = run.catch(() => undefined);
+  return run;
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+// The code-based path always generates and stores a code, unlike the
+// generic Student.access_code (nullable, since a Google-only account has
+// none) — narrow the return type so callers don't need to null-check it.
+export async function createStudent(
+  input: CreateStudentInput,
+): Promise<Student & { access_code: string }> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    return devMutate((data) => {
+      let code = generateAccessCode();
+      while (data.students.some((s) => s.access_code === code)) {
+        code = generateAccessCode();
+      }
+      const student: Student & { access_code: string } = {
+        id: randomUUID(),
+        name: input.name,
+        school: input.school,
+        grade: input.grade,
+        access_code: code,
+        google_uid: null,
+        google_email: null,
+        points_total: 0,
+        mode: null, // not chosen yet — the app asks once
+        profile: {},
+        created_at: new Date().toISOString(),
+      };
+      data.students.push(student);
+      return student;
+    });
+  }
+
+  // Supabase — retry a few times on the (very unlikely) access_code collision.
+  const db = supabase();
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const access_code = generateAccessCode();
+    const { data, error } = await db
+      .from("students")
+      .insert({
+        name: input.name,
+        school: input.school,
+        grade: input.grade,
+        access_code,
+      })
+      .select()
+      .single();
+    if (!error && data) return data as Student & { access_code: string };
+    // 23505 = unique_violation → regenerate code and retry
+    if (error && error.code !== "23505") {
+      throw new Error(`createStudent failed: ${error.message}`);
+    }
+  }
+  throw new Error("createStudent failed: could not generate a unique code");
+}
+
+export async function getStudentByCode(
+  code: string,
+): Promise<Student | null> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    const data = await devRead();
+    return data.students.find((s) => s.access_code === code) ?? null;
+  }
+
+  const { data, error } = await supabase()
+    .from("students")
+    .select()
+    .eq("access_code", code)
+    .maybeSingle();
+  if (error) throw new Error(`getStudentByCode failed: ${error.message}`);
+  return (data as Student) ?? null;
+}
+
+/**
+ * Add to a student's running points total (錢途護照). Callers decide *when*
+ * to award (first completion only, never on retakes/replays) — this just
+ * does the increment. Read-then-write rather than an atomic SQL increment,
+ * matching this file's existing risk tolerance elsewhere (e.g. createStudent's
+ * retry-on-collision loop): fine at this app's scale, a single student never
+ * submits the same completion from two places at once.
+ */
+/**
+ * Record which mode a student is working in. Idempotent — writing the same
+ * value again is a no-op, and switching is allowed: mode is a view over one
+ * content base, so changing it never touches progress, runs or stamps.
+ */
+/**
+ * Merge named fields into a student's cross-line profile.
+ *
+ * Read-modify-write rather than a jsonb merge operator, to keep the dev store
+ * and Supabase paths identical and the validation in one place. Callers pass
+ * only the fields they own; mergeProfile leaves everything else alone, so one
+ * line can never clear another's contribution.
+ */
+export async function updateStudentProfile(
+  studentId: string,
+  patch: StudentProfile,
+): Promise<StudentProfile> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    return devMutate((data) => {
+      const student = data.students.find((s) => s.id === studentId);
+      if (!student) throw new Error("updateStudentProfile: student not found");
+      const next = mergeProfile(student.profile, patch);
+      student.profile = next as Record<string, unknown>;
+      return next;
+    });
+  }
+
+  const db = supabase();
+  const { data: current, error: readError } = await db
+    .from("students")
+    .select("profile")
+    .eq("id", studentId)
+    .single();
+  if (readError)
+    throw new Error(`updateStudentProfile read failed: ${readError.message}`);
+
+  const next = mergeProfile(current?.profile, patch);
+  const { error: writeError } = await db
+    .from("students")
+    .update({ profile: next })
+    .eq("id", studentId);
+  if (writeError)
+    throw new Error(`updateStudentProfile write failed: ${writeError.message}`);
+  return next;
+}
+
+export async function setStudentMode(
+  studentId: string,
+  mode: StudentMode,
+): Promise<void> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    await devMutate((data) => {
+      const student = data.students.find((s) => s.id === studentId);
+      if (!student) throw new Error("setStudentMode: student not found");
+      student.mode = mode;
+      return null;
+    });
+    return;
+  }
+
+  const { error } = await supabase()
+    .from("students")
+    .update({ mode })
+    .eq("id", studentId);
+  if (error) throw new Error(`setStudentMode failed: ${error.message}`);
+}
+
+export async function addPoints(
+  studentId: string,
+  amount: number,
+): Promise<number> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    return devMutate((data) => {
+      const student = data.students.find((s) => s.id === studentId);
+      if (!student) throw new Error("addPoints: student not found");
+      student.points_total = (student.points_total ?? 0) + amount;
+      return student.points_total;
+    });
+  }
+
+  const db = supabase();
+  const { data: current, error: readError } = await db
+    .from("students")
+    .select("points_total")
+    .eq("id", studentId)
+    .single();
+  if (readError) throw new Error(`addPoints read failed: ${readError.message}`);
+  const next = (current?.points_total ?? 0) + amount;
+  const { error: writeError } = await db
+    .from("students")
+    .update({ points_total: next })
+    .eq("id", studentId);
+  if (writeError)
+    throw new Error(`addPoints write failed: ${writeError.message}`);
+  return next;
+}
+
+export async function getStudentById(id: string): Promise<Student | null> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    const data = await devRead();
+    return data.students.find((s) => s.id === id) ?? null;
+  }
+
+  const { data, error } = await supabase()
+    .from("students")
+    .select()
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw new Error(`getStudentById failed: ${error.message}`);
+  return (data as Student) ?? null;
+}
+
+export async function getStudentByGoogleUid(
+  googleUid: string,
+): Promise<Student | null> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    const data = await devRead();
+    return data.students.find((s) => s.google_uid === googleUid) ?? null;
+  }
+
+  const { data, error } = await supabase()
+    .from("students")
+    .select()
+    .eq("google_uid", googleUid)
+    .maybeSingle();
+  if (error)
+    throw new Error(`getStudentByGoogleUid failed: ${error.message}`);
+  return (data as Student) ?? null;
+}
+
+export interface CreateGoogleStudentInput {
+  name: string;
+  school: string;
+  grade: string;
+  google_uid: string;
+  google_email: string;
+}
+
+export type LinkGoogleResult =
+  | { ok: true; student: Student }
+  | { ok: false; reason: "already_linked_elsewhere" }
+  | { ok: false; reason: "code_not_found" }
+  | { ok: false; reason: "code_linked_to_different_google" };
+
+/**
+ * Attach a Google identity to an existing student record — the "link from
+ * settings" action, and the second half of the cold-sign-in "link my code"
+ * choice once that flow has resolved a student by code. Never silently
+ * reassigns a google_uid that's already linked to a *different* student.
+ */
+export async function linkGoogleToStudentId(
+  studentId: string,
+  googleUid: string,
+  googleEmail: string,
+): Promise<LinkGoogleResult> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  const conflicting = await getStudentByGoogleUid(googleUid);
+  if (conflicting && conflicting.id !== studentId) {
+    return { ok: false, reason: "already_linked_elsewhere" };
+  }
+
+  if (b === "dev") {
+    const student = await devMutate((data) => {
+      const row = data.students.find((s) => s.id === studentId);
+      if (!row) return null;
+      row.google_uid = googleUid;
+      row.google_email = googleEmail;
+      return row;
+    });
+    if (!student) throw new Error("linkGoogleToStudentId: student not found");
+    return { ok: true, student };
+  }
+
+  const { data, error } = await supabase()
+    .from("students")
+    .update({ google_uid: googleUid, google_email: googleEmail })
+    .eq("id", studentId)
+    .select()
+    .single();
+  if (error)
+    throw new Error(`linkGoogleToStudentId failed: ${error.message}`);
+  return { ok: true, student: data as Student };
+}
+
+/** The cold-sign-in "already have a code? enter it to link" case: resolves
+ * the account by its recovery code rather than an already-known student id. */
+export async function linkGoogleByAccessCode(
+  code: string,
+  googleUid: string,
+  googleEmail: string,
+): Promise<LinkGoogleResult> {
+  const student = await getStudentByCode(code);
+  if (!student) return { ok: false, reason: "code_not_found" };
+  if (student.google_uid && student.google_uid !== googleUid) {
+    return { ok: false, reason: "code_linked_to_different_google" };
+  }
+  return linkGoogleToStudentId(student.id, googleUid, googleEmail);
+}
+
+/** The cold-sign-in "start fresh" case: a brand-new account with no
+ * access_code, identified going forward purely by its Google identity. */
+export async function createStudentWithGoogle(
+  input: CreateGoogleStudentInput,
+): Promise<Student> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    return devMutate((data) => {
+      const student: Student = {
+        id: randomUUID(),
+        name: input.name,
+        school: input.school,
+        grade: input.grade,
+        access_code: null,
+        google_uid: input.google_uid,
+        google_email: input.google_email,
+        points_total: 0,
+        mode: null, // not chosen yet — the app asks once
+        profile: {},
+        created_at: new Date().toISOString(),
+      };
+      data.students.push(student);
+      return student;
+    });
+  }
+
+  const { data, error } = await supabase()
+    .from("students")
+    .insert({
+      name: input.name,
+      school: input.school,
+      grade: input.grade,
+      access_code: null,
+      google_uid: input.google_uid,
+      google_email: input.google_email,
+    })
+    .select()
+    .single();
+  if (error)
+    throw new Error(`createStudentWithGoogle failed: ${error.message}`);
+  return data as Student;
+}
+
+export async function upsertModuleProgress(
+  studentId: string,
+  moduleNumber: number,
+  quizScore: number,
+  quizTotal: number,
+): Promise<ModuleProgress> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    return devMutate((data) => {
+      const now = new Date().toISOString();
+      const existing = data.module_progress.find(
+        (p) => p.student_id === studentId && p.module_number === moduleNumber,
+      );
+      if (existing) {
+        existing.completed_at = now;
+        existing.quiz_score = quizScore;
+        existing.quiz_total = quizTotal;
+        return existing;
+      }
+      const row: ModuleProgress = {
+        id: randomUUID(),
+        student_id: studentId,
+        module_number: moduleNumber,
+        completed_at: now,
+        quiz_score: quizScore,
+        quiz_total: quizTotal,
+      };
+      data.module_progress.push(row);
+      return row;
+    });
+  }
+
+  const { data, error } = await supabase()
+    .from("module_progress")
+    .upsert(
+      {
+        student_id: studentId,
+        module_number: moduleNumber,
+        quiz_score: quizScore,
+        quiz_total: quizTotal,
+        completed_at: new Date().toISOString(),
+      },
+      { onConflict: "student_id,module_number" },
+    )
+    .select()
+    .single();
+  if (error) throw new Error(`upsertModuleProgress failed: ${error.message}`);
+  return data as ModuleProgress;
+}
+
+export async function getProgress(
+  studentId: string,
+): Promise<ModuleProgress[]> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    const data = await devRead();
+    return data.module_progress
+      .filter((p) => p.student_id === studentId)
+      .sort((a, b) => a.module_number - b.module_number);
+  }
+
+  const { data, error } = await supabase()
+    .from("module_progress")
+    .select()
+    .eq("student_id", studentId)
+    .order("module_number", { ascending: true });
+  if (error) throw new Error(`getProgress failed: ${error.message}`);
+  return (data as ModuleProgress[]) ?? [];
+}
+
+export async function createSimulationRun(
+  input: CreateRunInput,
+): Promise<SimulationRun> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  const record = {
+    student_id: input.student_id,
+    // Dual write. line_id is the durable identity; line_slug stays until it
+    // is dropped, both because it is NOT NULL on the sibling tables and
+    // because it is the safety net that makes migration-08 reversible.
+    line_slug: input.line_slug,
+    line_id: lineIdForSlug(input.line_slug),
+    kind: input.kind,
+    rent_choice: input.rent_choice ?? null,
+    savings_rate: input.savings_rate ?? null,
+    spending_choices: input.spending_choices,
+    outcome_summary: input.outcome_summary,
+  };
+
+  if (b === "dev") {
+    return devMutate((data) => {
+      const row: SimulationRun = {
+        id: randomUUID(),
+        ...record,
+        created_at: new Date().toISOString(),
+      };
+      data.simulation_runs.push(row);
+      return row;
+    });
+  }
+
+  const { data, error } = await supabase()
+    .from("simulation_runs")
+    .insert(record)
+    .select()
+    .single();
+  if (error) throw new Error(`createSimulationRun failed: ${error.message}`);
+  return data as SimulationRun;
+}
+
+export async function getSimulationRun(
+  runId: string,
+): Promise<SimulationRun | null> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    const data = await devRead();
+    const row = data.simulation_runs.find((r) => r.id === runId);
+    return row ? withLineSlug(row) : null;
+  }
+
+  const { data, error } = await supabase()
+    .from("simulation_runs")
+    .select()
+    .eq("id", runId)
+    .maybeSingle();
+  if (error) throw new Error(`getSimulationRun failed: ${error.message}`);
+  return data ? withLineSlug(data as SimulationRun) : null;
+}
+
+/** The student's most recent run for one specific line. */
+export async function getLatestSimulationRunForLine(
+  studentId: string,
+  lineSlug: string,
+): Promise<SimulationRun | null> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    const data = await devRead();
+    const runs = data.simulation_runs
+      .map(withLineSlug)
+      .filter((r) => r.student_id === studentId && r.line_slug === lineSlug)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at));
+    return runs[0] ?? null;
+  }
+
+  const { data, error } = await supabase()
+    .from("simulation_runs")
+    .select()
+    .eq("student_id", studentId)
+    .eq("line_slug", lineSlug)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error)
+    throw new Error(`getLatestSimulationRunForLine failed: ${error.message}`);
+  return data ? withLineSlug(data as SimulationRun) : null;
+}
+
+/** Latest run per line for a student, keyed by line_slug (for the dashboard). */
+export async function getLatestSimulationRunsByLine(
+  studentId: string,
+): Promise<Record<string, SimulationRun>> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  let runs: SimulationRun[];
+  if (b === "dev") {
+    const data = await devRead();
+    runs = data.simulation_runs
+      .map(withLineSlug)
+      .filter((r) => r.student_id === studentId);
+  } else {
+    const { data, error } = await supabase()
+      .from("simulation_runs")
+      .select()
+      .eq("student_id", studentId)
+      .order("created_at", { ascending: false });
+    if (error)
+      throw new Error(`getLatestSimulationRunsByLine failed: ${error.message}`);
+    runs = ((data as SimulationRun[]) ?? []).map(withLineSlug);
+  }
+
+  // Keep only the most recent run for each line.
+  const byLine: Record<string, SimulationRun> = {};
+  for (const run of runs) {
+    const existing = byLine[run.line_slug];
+    if (!existing || run.created_at > existing.created_at) {
+      byLine[run.line_slug] = run;
+    }
+  }
+  return byLine;
+}
+
+export async function addCoachMessage(
+  runId: string,
+  message: string,
+): Promise<CoachMessage> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    return devMutate((data) => {
+      const row: CoachMessage = {
+        id: randomUUID(),
+        simulation_run_id: runId,
+        message,
+        created_at: new Date().toISOString(),
+      };
+      data.coach_messages.push(row);
+      return row;
+    });
+  }
+
+  const { data, error } = await supabase()
+    .from("coach_messages")
+    .insert({ simulation_run_id: runId, message })
+    .select()
+    .single();
+  if (error) throw new Error(`addCoachMessage failed: ${error.message}`);
+  return data as CoachMessage;
+}
+
+export async function getLatestCoachMessage(
+  runId: string,
+): Promise<CoachMessage | null> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    const data = await devRead();
+    const msgs = data.coach_messages
+      .filter((m) => m.simulation_run_id === runId)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at));
+    return msgs[0] ?? null;
+  }
+
+  const { data, error } = await supabase()
+    .from("coach_messages")
+    .select()
+    .eq("simulation_run_id", runId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`getLatestCoachMessage failed: ${error.message}`);
+  return (data as CoachMessage) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// 前後測 (pre/post line tests)
+// ---------------------------------------------------------------------------
+
+export interface CreateLineTestInput {
+  student_id: string;
+  line_slug: string;
+  phase: "pre" | "post";
+  score: number;
+  total: number;
+  /** The bank version the student just answered — prePostBankVersion(). */
+  bank_version: number;
+}
+
+/** Records one attempt. A student can retake either phase — callers that
+ * want "the" pre/post score should read the most recent row per phase
+ * (see getLineTests below), not assume a single row exists. */
+export async function createLineTest(
+  input: CreateLineTestInput,
+): Promise<LineTest> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    return devMutate((data) => {
+      const row: LineTest = {
+        id: randomUUID(),
+        ...input,
+        line_id: lineIdForSlug(input.line_slug),
+        created_at: new Date().toISOString(),
+      };
+      data.line_tests.push(row);
+      return row;
+    });
+  }
+
+  // Dual write, as in createSimulationRun. These rows are the pre/post
+  // learning-gain evidence, so they are the ones least affordable to orphan
+  // when a slug changes.
+  const { data, error } = await supabase()
+    .from("line_tests")
+    .insert({ ...input, line_id: lineIdForSlug(input.line_slug) })
+    .select()
+    .single();
+  if (error) throw new Error(`createLineTest failed: ${error.message}`);
+  return data as LineTest;
+}
+
+/** The student's most recent pre-test and post-test rows for one line, on
+ * the line's CURRENT bank version — the only rows the app compares or uses
+ * to decide what to offer next. Attempts on an earlier version of the bank
+ * come back separately as `earlier`, so they stay visible, labelled as the
+ * old bank, and are never set against a score from the new one. */
+export async function getLineTests(
+  studentId: string,
+  lineSlug: string,
+): Promise<{
+  pre: LineTest | null;
+  post: LineTest | null;
+  earlier: { pre: LineTest | null; post: LineTest | null };
+}> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  const current = isLineSlug(lineSlug) ? prePostBankVersion(lineSlug) : 1;
+
+  function latestOfPhase(rows: LineTest[], phase: "pre" | "post") {
+    return (
+      rows
+        .filter((r) => r.phase === phase)
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))[0] ?? null
+    );
+  }
+  function split(rows: LineTest[]) {
+    const now = rows.filter((r) => bankVersionOf(r) === current);
+    const old = rows.filter((r) => bankVersionOf(r) !== current);
+    return {
+      pre: latestOfPhase(now, "pre"),
+      post: latestOfPhase(now, "post"),
+      earlier: { pre: latestOfPhase(old, "pre"), post: latestOfPhase(old, "post") },
+    };
+  }
+
+  if (b === "dev") {
+    const data = await devRead();
+    return split(
+      data.line_tests.filter(
+        (r) => r.student_id === studentId && r.line_slug === lineSlug,
+      ),
+    );
+  }
+
+  const { data, error } = await supabase()
+    .from("line_tests")
+    .select()
+    .eq("student_id", studentId)
+    .eq("line_slug", lineSlug)
+    .order("created_at", { ascending: false });
+  if (error) throw new Error(`getLineTests failed: ${error.message}`);
+  return split((data as LineTest[]) ?? []);
+}
+
+// ---------------------------------------------------------------------------
+// Class mode
+// ---------------------------------------------------------------------------
+// No student login required — a classroom guest joins with just a display
+// name. host_token (returned only to whoever creates the room) authorizes
+// starting/ending a round in place of a full teacher account system.
+
+function generateRoomCode(): string {
+  return generateAccessCode();
+}
+
+export async function createClassRoom(lineSlug: string): Promise<ClassRoom> {
+  return insertClassRoom(lineSlug, {}, "createClassRoom");
+}
+
+/**
+ * class_rooms.line_slug is NOT NULL with a foreign key to lines, and a life
+ * room is not a line, so a life room stores the capstone line (財務決策線,
+ * whose finale reads the life-game state). Readers branch on kind, never on
+ * this value. See migration-25.
+ */
+export const LIFE_ROOM_LINE_SLUG = "caiwujuece";
+
+/** A 人生賽局 class round (migration-25): every team plays the same seed. */
+export async function createLifeClassRoom(seed: number): Promise<ClassRoom> {
+  return insertClassRoom(
+    LIFE_ROOM_LINE_SLUG,
+    { kind: "life", seed },
+    "createLifeClassRoom",
+  );
+}
+
+/** Shared by both room kinds. `extra` is sent only when non-empty, so a quiz
+ * room's insert is exactly what it was before migration-25 and still works on
+ * a database that does not have the kind / seed columns yet. */
+async function insertClassRoom(
+  lineSlug: string,
+  extra: Pick<ClassRoom, "kind" | "seed">,
+  label: string,
+): Promise<ClassRoom> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  const hostToken = randomUUID();
+
+  if (b === "dev") {
+    return devMutate((data) => {
+      let code = generateRoomCode();
+      while (data.class_rooms.some((r) => r.code === code)) code = generateRoomCode();
+      const room: ClassRoom = {
+        id: randomUUID(),
+        code,
+        host_token: hostToken,
+        line_slug: lineSlug,
+        line_id: lineIdForSlug(lineSlug),
+        status: "waiting",
+        started_at: null,
+        ...extra,
+        created_at: new Date().toISOString(),
+      };
+      data.class_rooms.push(room);
+      return room;
+    });
+  }
+
+  const db = supabase();
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const code = generateRoomCode();
+    const { data, error } = await db
+      .from("class_rooms")
+      .insert({
+        code,
+        host_token: hostToken,
+        line_slug: lineSlug,
+        line_id: lineIdForSlug(lineSlug),
+        status: "waiting",
+        ...extra,
+      })
+      .select()
+      .single();
+    if (!error && data) return data as ClassRoom;
+    if (error && error.code !== "23505") {
+      throw new Error(`${label} failed: ${error.message}`);
+    }
+  }
+  throw new Error(`${label} failed: could not generate a unique code`);
+}
+
+export async function getClassRoomByCode(code: string): Promise<ClassRoom | null> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    const data = await devRead();
+    return data.class_rooms.find((r) => r.code === code) ?? null;
+  }
+
+  const { data, error } = await supabase()
+    .from("class_rooms")
+    .select()
+    .eq("code", code)
+    .maybeSingle();
+  if (error) throw new Error(`getClassRoomByCode failed: ${error.message}`);
+  return (data as ClassRoom) ?? null;
+}
+
+export async function getClassRoom(id: string): Promise<ClassRoom | null> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    const data = await devRead();
+    return data.class_rooms.find((r) => r.id === id) ?? null;
+  }
+
+  const { data, error } = await supabase()
+    .from("class_rooms")
+    .select()
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw new Error(`getClassRoom failed: ${error.message}`);
+  return (data as ClassRoom) ?? null;
+}
+
+export type SetRoomStatusResult =
+  | { ok: true; room: ClassRoom }
+  | { ok: false; reason: "not_found" | "wrong_token" };
+
+/** Requires the host_token returned at room creation — the only check that
+ * stands in for a full teacher-account system here. */
+export async function setClassRoomStatus(
+  roomId: string,
+  hostToken: string,
+  status: "active" | "finished",
+): Promise<SetRoomStatusResult> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  const patch: Partial<ClassRoom> =
+    status === "active"
+      ? { status, started_at: new Date().toISOString() }
+      : { status };
+
+  if (b === "dev") {
+    const room = await devMutate((data) => {
+      const row = data.class_rooms.find((r) => r.id === roomId);
+      if (!row) return null;
+      if (row.host_token !== hostToken) return "wrong_token" as const;
+      Object.assign(row, patch);
+      return row;
+    });
+    if (room === null) return { ok: false, reason: "not_found" };
+    if (room === "wrong_token") return { ok: false, reason: "wrong_token" };
+    return { ok: true, room };
+  }
+
+  const db = supabase();
+  const { data: existing, error: readError } = await db
+    .from("class_rooms")
+    .select()
+    .eq("id", roomId)
+    .maybeSingle();
+  if (readError) throw new Error(`setClassRoomStatus read failed: ${readError.message}`);
+  if (!existing) return { ok: false, reason: "not_found" };
+  if ((existing as ClassRoom).host_token !== hostToken) {
+    return { ok: false, reason: "wrong_token" };
+  }
+  const { data, error } = await db
+    .from("class_rooms")
+    .update(patch)
+    .eq("id", roomId)
+    .select()
+    .single();
+  if (error) throw new Error(`setClassRoomStatus write failed: ${error.message}`);
+  return { ok: true, room: data as ClassRoom };
+}
+
+/** `team` is for life rooms (migration-25). Leave it out for a quiz room:
+ * the insert is then exactly what it was before, and works on a database
+ * without the team column. */
+export async function joinClassRoom(
+  roomId: string,
+  displayName: string,
+  team?: string | null,
+): Promise<ClassParticipant> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  const teamField = team === undefined ? {} : { team };
+
+  if (b === "dev") {
+    return devMutate((data) => {
+      const row: ClassParticipant = {
+        id: randomUUID(),
+        room_id: roomId,
+        display_name: displayName,
+        score: 0,
+        total_ms: null,
+        submitted_at: null,
+        ...teamField,
+        joined_at: new Date().toISOString(),
+      };
+      data.class_participants.push(row);
+      return row;
+    });
+  }
+
+  const { data, error } = await supabase()
+    .from("class_participants")
+    .insert({ room_id: roomId, display_name: displayName, ...teamField })
+    .select()
+    .single();
+  if (error) throw new Error(`joinClassRoom failed: ${error.message}`);
+  return data as ClassParticipant;
+}
+
+export async function submitClassResult(
+  participantId: string,
+  score: number,
+  totalMs: number,
+): Promise<ClassParticipant | null> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  const patch = { score, total_ms: totalMs, submitted_at: new Date().toISOString() };
+
+  // First submission sticks. Without this, the same browser could replay
+  // the round and overwrite its score with a better one — the participant
+  // cookie only proves who is posting, not that they have not posted before.
+  // A second submit returns the row as it stands rather than an error, so the
+  // client's own "submitted" state stays consistent with the leaderboard.
+  if (b === "dev") {
+    return devMutate((data) => {
+      const row = data.class_participants.find((p) => p.id === participantId);
+      if (!row) return null;
+      if (row.submitted_at) return row;
+      Object.assign(row, patch);
+      return row;
+    });
+  }
+
+  const { data, error } = await supabase()
+    .from("class_participants")
+    .update(patch)
+    .eq("id", participantId)
+    .is("submitted_at", null)
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`submitClassResult failed: ${error.message}`);
+  if (data) return data as ClassParticipant;
+  // Nothing updated: either unknown, or already submitted — read it back so
+  // the caller can tell the two apart and the client sees the standing score.
+  const { data: existing } = await supabase()
+    .from("class_participants")
+    .select()
+    .eq("id", participantId)
+    .maybeSingle();
+  return (existing as ClassParticipant) ?? null;
+}
+
+/** Leaderboard order: accuracy first, then speed — matches the spec's
+ * "scored on speed + accuracy" with accuracy as the primary sort key. */
+export async function getClassParticipants(roomId: string): Promise<ClassParticipant[]> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  function sorted(rows: ClassParticipant[]) {
+    return [...rows].sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      const aMs = a.total_ms ?? Infinity;
+      const bMs = b.total_ms ?? Infinity;
+      return aMs - bMs;
+    });
+  }
+
+  if (b === "dev") {
+    const data = await devRead();
+    return sorted(data.class_participants.filter((p) => p.room_id === roomId));
+  }
+
+  const { data, error } = await supabase()
+    .from("class_participants")
+    .select()
+    .eq("room_id", roomId);
+  if (error) throw new Error(`getClassParticipants failed: ${error.message}`);
+  return sorted((data as ClassParticipant[]) ?? []);
+}
+
+// ---------------------------------------------------------------------------
+// Historical replay simulator (2b)
+// ---------------------------------------------------------------------------
+// See lib/historicalPricesSeed.ts for the real (TWSE/TPEx) seed data these
+// functions load.
+
+/** Seeding only — replaces any existing rows for the given tickers/dates.
+ * Called once by scripts/seed-historical-prices.ts, never at request time. */
+export async function bulkInsertHistoricalPrices(
+  rows: HistoricalPrice[],
+): Promise<number> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    return devMutate((data) => {
+      const key = (r: { ticker: string; date: string }) => `${r.ticker}|${r.date}`;
+      const existing = new Map(data.historical_prices.map((r) => [key(r), r]));
+      for (const row of rows) existing.set(key(row), row);
+      data.historical_prices = Array.from(existing.values());
+      return rows.length;
+    });
+  }
+
+  const db = supabase();
+  const BATCH = 500;
+  for (let i = 0; i < rows.length; i += BATCH) {
+    const batch = rows.slice(i, i + BATCH);
+    const { error } = await db
+      .from("historical_prices")
+      .upsert(batch, { onConflict: "ticker,date" });
+    if (error) throw new Error(`bulkInsertHistoricalPrices failed: ${error.message}`);
+  }
+  return rows.length;
+}
+
+/** Supabase/PostgREST caps an unbounded .select() at a default row limit
+ * (commonly 1000) — historical_prices has ~4,700+ rows (6 tickers × ~790
+ * trading days), well past that, so a plain select silently truncates
+ * instead of erroring. Pages through with .range() until a page comes back
+ * short, which is the correctness fix every read against this table needs. */
+async function selectAllRows<T>(
+  build: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+  errorLabel: string,
+): Promise<T[]> {
+  const PAGE = 1000;
+  const out: T[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await build(from, from + PAGE - 1);
+    if (error) throw new Error(`${errorLabel} failed: ${error.message}`);
+    const page = data ?? [];
+    out.push(...page);
+    if (page.length < PAGE) break;
+  }
+  return out;
+}
+
+/** Sorted distinct trading dates in the seed data — the shared "calendar"
+ * every ticker's prices are keyed against. */
+export async function getHistoricalDates(): Promise<string[]> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    const data = await devRead();
+    return Array.from(new Set(data.historical_prices.map((r) => r.date))).sort();
+  }
+
+  const rows = await selectAllRows<{ date: string }>(
+    (from, to) =>
+      supabase()
+        .from("historical_prices")
+        .select("date")
+        .order("date", { ascending: true })
+        .range(from, to),
+    "getHistoricalDates",
+  );
+  return Array.from(new Set(rows.map((r) => r.date))).sort();
+}
+
+/** All tickers' closing prices on one date. */
+export async function getPricesOnDate(date: string): Promise<Record<string, number>> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    const data = await devRead();
+    const out: Record<string, number> = {};
+    for (const r of data.historical_prices) {
+      if (r.date === date) out[r.ticker] = r.closing_price;
+    }
+    return out;
+  }
+
+  const { data, error } = await supabase()
+    .from("historical_prices")
+    .select("ticker, closing_price")
+    .eq("date", date);
+  if (error) throw new Error(`getPricesOnDate failed: ${error.message}`);
+  const out: Record<string, number> = {};
+  for (const r of (data as { ticker: string; closing_price: number }[]) ?? []) {
+    out[r.ticker] = r.closing_price;
+  }
+  return out;
+}
+
+/** All tickers' prices across several dates at once — batches what would
+ * otherwise be one getPricesOnDate call per point on the sparkline. */
+export async function getPricesForDates(
+  dates: string[],
+): Promise<Record<string, Record<string, number>>> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+  const dateSet = new Set(dates);
+  const out: Record<string, Record<string, number>> = {};
+
+  if (b === "dev") {
+    const data = await devRead();
+    for (const r of data.historical_prices) {
+      if (!dateSet.has(r.date)) continue;
+      (out[r.date] ??= {})[r.ticker] = r.closing_price;
+    }
+    return out;
+  }
+
+  const rows = await selectAllRows<{ ticker: string; date: string; closing_price: number }>(
+    (from, to) =>
+      supabase()
+        .from("historical_prices")
+        .select("ticker, date, closing_price")
+        .in("date", dates)
+        .range(from, to),
+    "getPricesForDates",
+  );
+  for (const r of rows) {
+    (out[r.date] ??= {})[r.ticker] = r.closing_price;
+  }
+  return out;
+}
+
+export async function getSimPortfolio(studentId: string): Promise<SimPortfolio | null> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    const data = await devRead();
+    return data.sim_portfolios.find((p) => p.student_id === studentId) ?? null;
+  }
+
+  const { data, error } = await supabase()
+    .from("sim_portfolios")
+    .select()
+    .eq("student_id", studentId)
+    .maybeSingle();
+  if (error) throw new Error(`getSimPortfolio failed: ${error.message}`);
+  return (data as SimPortfolio) ?? null;
+}
+
+export interface CreateSimPortfolioInput {
+  student_id: string;
+  sim_start_date: string;
+  holdings: Record<string, number>;
+  cash_balance: number;
+}
+
+export async function createSimPortfolio(
+  input: CreateSimPortfolioInput,
+): Promise<SimPortfolio> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  const record = {
+    student_id: input.student_id,
+    sim_start_date: input.sim_start_date,
+    sim_current_date: input.sim_start_date,
+    holdings: input.holdings,
+    cash_balance: input.cash_balance,
+    last_advanced_at: new Date().toISOString(),
+    revealed: false,
+  };
+
+  if (b === "dev") {
+    return devMutate((data) => {
+      const row: SimPortfolio = { ...record, created_at: new Date().toISOString() };
+      data.sim_portfolios.push(row);
+      return row;
+    });
+  }
+
+  const { data, error } = await supabase()
+    .from("sim_portfolios")
+    .insert(record)
+    .select()
+    .single();
+  if (error) throw new Error(`createSimPortfolio failed: ${error.message}`);
+  return data as SimPortfolio;
+}
+
+export interface UpdateSimPortfolioInput {
+  sim_current_date?: string;
+  holdings?: Record<string, number>;
+  cash_balance?: number;
+  last_advanced_at?: string;
+  revealed?: boolean;
+}
+
+export async function updateSimPortfolio(
+  studentId: string,
+  patch: UpdateSimPortfolioInput,
+): Promise<SimPortfolio | null> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    return devMutate((data) => {
+      const row = data.sim_portfolios.find((p) => p.student_id === studentId);
+      if (!row) return null;
+      Object.assign(row, patch);
+      return row;
+    });
+  }
+
+  const { data, error } = await supabase()
+    .from("sim_portfolios")
+    .update(patch)
+    .eq("student_id", studentId)
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`updateSimPortfolio failed: ${error.message}`);
+  return (data as SimPortfolio) ?? null;
+}
+
+
+// ---------------------------------------------------------------------------
+// Line completions (migration-20). Completion is kept once earned.
+// ---------------------------------------------------------------------------
+
+/** Slugs of the lines this student has a recorded completion for. */
+export async function getLineCompletions(studentId: string): Promise<Set<string>> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+  if (b === "dev") {
+    const data = await devRead();
+    return new Set(
+      data.line_completions.filter((c) => c.student_id === studentId).map((c) => c.line_slug),
+    );
+  }
+  const { data, error } = await supabase()
+    .from("line_completions")
+    .select("line_slug")
+    .eq("student_id", studentId);
+  if (error) throw new Error(`getLineCompletions failed: ${error.message}`);
+  return new Set(((data as { line_slug: string }[]) ?? []).map((r) => r.line_slug));
+}
+
+/** Record that a student completed a line. Idempotent: the first record wins. */
+export async function recordLineCompletion(studentId: string, lineSlug: string): Promise<void> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+  if (b === "dev") {
+    await devMutate((data) => {
+      if (data.line_completions.some((c) => c.student_id === studentId && c.line_slug === lineSlug)) return;
+      data.line_completions.push({
+        id: randomUUID(),
+        student_id: studentId,
+        line_slug: lineSlug,
+        completed_at: new Date().toISOString(),
+      });
+    });
+    return;
+  }
+  const { error } = await supabase()
+    .from("line_completions")
+    .upsert(
+      { student_id: studentId, line_slug: lineSlug },
+      { onConflict: "student_id,line_slug", ignoreDuplicates: true },
+    );
+  if (error) throw new Error(`recordLineCompletion failed: ${error.message}`);
+}
+
+// ---------------------------------------------------------------------------
+// Avatar (migration-22)
+// ---------------------------------------------------------------------------
+
+/** Store the character built at onboarding. null clears it (the creator is
+ * then shown again). The caller validates the shape. */
+export async function setStudentAvatar(
+  studentId: string,
+  avatar: Record<string, unknown> | null,
+): Promise<void> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    await devMutate((data) => {
+      const student = data.students.find((s) => s.id === studentId);
+      if (!student) throw new Error("setStudentAvatar: student not found");
+      student.avatar = avatar;
+      return null;
+    });
+    return;
+  }
+
+  const { error } = await supabase()
+    .from("students")
+    .update({ avatar })
+    .eq("id", studentId);
+  if (error) throw new Error(`setStudentAvatar failed: ${error.message}`);
+}
+
+// ---------------------------------------------------------------------------
+// 人生賽局 saves (migration-21)
+// ---------------------------------------------------------------------------
+// One solo save per student (class_team_id null) and one save per class team
+// (class_team_id = `${roomId}:${team}`), each enforced by a partial unique
+// index. updated_at is the optimistic-concurrency token: pass it back exactly
+// as it was read.
+
+/** The student's own (non-class) save, if they have started one. */
+export async function getSoloLifeSave(
+  studentId: string,
+): Promise<LifeGameSave | null> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    const data = await devRead();
+    return (
+      data.life_game_saves.find(
+        (s) => s.student_id === studentId && s.class_team_id === null,
+      ) ?? null
+    );
+  }
+
+  const { data, error } = await supabase()
+    .from("life_game_saves")
+    .select()
+    .eq("student_id", studentId)
+    .is("class_team_id", null)
+    .maybeSingle();
+  if (error) throw new Error(`getSoloLifeSave failed: ${error.message}`);
+  return (data as LifeGameSave) ?? null;
+}
+
+/** A class team's shared save, if its captain has started one. */
+export async function getTeamLifeSave(
+  classTeamId: string,
+): Promise<LifeGameSave | null> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    const data = await devRead();
+    return data.life_game_saves.find((s) => s.class_team_id === classTeamId) ?? null;
+  }
+
+  const { data, error } = await supabase()
+    .from("life_game_saves")
+    .select()
+    .eq("class_team_id", classTeamId)
+    .maybeSingle();
+  if (error) throw new Error(`getTeamLifeSave failed: ${error.message}`);
+  return (data as LifeGameSave) ?? null;
+}
+
+export interface CreateLifeSaveInput {
+  student_id: string;
+  class_team_id: string | null;
+  state: unknown;
+  state_version: number;
+  seed: number;
+}
+
+/**
+ * Start a save. If one already exists for this student (solo) or this team
+ * (class), that row is returned unchanged rather than an error: two tabs, or
+ * two teammates, starting at once both end up on the same save.
+ */
+export async function createLifeSave(
+  input: CreateLifeSaveInput,
+): Promise<LifeGameSave> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    return devMutate((data) => {
+      const existing = data.life_game_saves.find((s) =>
+        input.class_team_id === null
+          ? s.student_id === input.student_id && s.class_team_id === null
+          : s.class_team_id === input.class_team_id,
+      );
+      if (existing) return existing;
+      const now = new Date().toISOString();
+      const row: LifeGameSave = {
+        id: randomUUID(),
+        student_id: input.student_id,
+        class_team_id: input.class_team_id,
+        state: input.state,
+        state_version: input.state_version,
+        seed: input.seed,
+        created_at: now,
+        updated_at: now,
+      };
+      data.life_game_saves.push(row);
+      return row;
+    });
+  }
+
+  const { data, error } = await supabase()
+    .from("life_game_saves")
+    .insert({
+      student_id: input.student_id,
+      class_team_id: input.class_team_id,
+      state: input.state,
+      state_version: input.state_version,
+      seed: input.seed,
+    })
+    .select()
+    .single();
+  if (!error && data) return data as LifeGameSave;
+  // 23505 = unique_violation: someone else created it first. Return theirs.
+  if (error && error.code === "23505") {
+    const existing =
+      input.class_team_id === null
+        ? await getSoloLifeSave(input.student_id)
+        : await getTeamLifeSave(input.class_team_id);
+    if (existing) return existing;
+  }
+  throw new Error(`createLifeSave failed: ${error?.message ?? "no row returned"}`);
+}
+
+/**
+ * Write a new state, but only if nobody has saved since `expectedUpdatedAt`
+ * was read. Returns the updated row, or null when the save has moved on (or
+ * does not exist) — the caller reloads and retries or reports a conflict.
+ */
+export async function updateLifeSave(
+  id: string,
+  state: unknown,
+  expectedUpdatedAt: string,
+  stateVersion?: number,
+  /** Only a reset changes the seed (a new game, new rolls). */
+  seed?: number,
+): Promise<LifeGameSave | null> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  // Strictly later than the token it replaces, even within one millisecond,
+  // so a stale writer holding the old value can never match the new row.
+  const expectedMs = Date.parse(expectedUpdatedAt);
+  const updatedAt = new Date(
+    Number.isNaN(expectedMs) ? Date.now() : Math.max(Date.now(), expectedMs + 1),
+  ).toISOString();
+  const patch = {
+    state,
+    updated_at: updatedAt,
+    ...(stateVersion === undefined ? {} : { state_version: stateVersion }),
+    ...(seed === undefined ? {} : { seed }),
+  };
+
+  if (b === "dev") {
+    return devMutate((data) => {
+      const row = data.life_game_saves.find((s) => s.id === id);
+      if (!row || row.updated_at !== expectedUpdatedAt) return null;
+      Object.assign(row, patch);
+      return row;
+    });
+  }
+
+  const { data, error } = await supabase()
+    .from("life_game_saves")
+    .update(patch)
+    .eq("id", id)
+    .eq("updated_at", expectedUpdatedAt)
+    .select()
+    .maybeSingle();
+  if (error) throw new Error(`updateLifeSave failed: ${error.message}`);
+  return (data as LifeGameSave) ?? null;
+}
+
+/** Every team save in one class room, for its leaderboard. Scores are
+ * computed from these states on the server, never taken from a client. */
+export async function listLifeSavesForRoom(roomId: string): Promise<LifeGameSave[]> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+  // Room ids are uuids. Anything else could carry LIKE wildcards (% _ *) and
+  // widen the prefix match to other rooms' saves.
+  if (!/^[0-9a-f-]+$/i.test(roomId)) return [];
+  const prefix = `${roomId}:`;
+
+  if (b === "dev") {
+    const data = await devRead();
+    return data.life_game_saves
+      .filter((s) => s.class_team_id?.startsWith(prefix))
+      .sort((a, b) => (a.class_team_id ?? "").localeCompare(b.class_team_id ?? ""));
+  }
+
+  const { data, error } = await supabase()
+    .from("life_game_saves")
+    .select()
+    .like("class_team_id", `${prefix}%`)
+    .order("class_team_id", { ascending: true });
+  if (error) throw new Error(`listLifeSavesForRoom failed: ${error.message}`);
+  return (data as LifeGameSave[]) ?? [];
+}
+
+// ---------------------------------------------------------------------------
+// Task results (migration-24)
+// ---------------------------------------------------------------------------
+
+export type InsertTaskResultInput = Omit<TaskResultRow, "id" | "created_at">;
+
+/** Record one submitted attempt. The caller works out `attempt` (see
+ * countTaskAttempts) and whether the station now counts as done. */
+export async function insertTaskResult(
+  input: InsertTaskResultInput,
+): Promise<TaskResultRow> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    return devMutate((data) => {
+      const row: TaskResultRow = {
+        id: randomUUID(),
+        ...input,
+        created_at: new Date().toISOString(),
+      };
+      data.task_results.push(row);
+      return row;
+    });
+  }
+
+  const { data, error } = await supabase()
+    .from("task_results")
+    .insert(input)
+    .select()
+    .single();
+  if (error) throw new Error(`insertTaskResult failed: ${error.message}`);
+  return data as TaskResultRow;
+}
+
+/** A student's task attempts, most recent first; one task set if given. */
+export async function getTaskResults(
+  studentId: string,
+  taskSetId?: string,
+): Promise<TaskResultRow[]> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    const data = await devRead();
+    return data.task_results
+      .filter(
+        (r) =>
+          r.student_id === studentId &&
+          (taskSetId === undefined || r.task_set_id === taskSetId),
+      )
+      .sort((a, b) => b.created_at.localeCompare(a.created_at));
+  }
+
+  let query = supabase().from("task_results").select().eq("student_id", studentId);
+  if (taskSetId !== undefined) query = query.eq("task_set_id", taskSetId);
+  const { data, error } = await query.order("created_at", { ascending: false });
+  if (error) throw new Error(`getTaskResults failed: ${error.message}`);
+  return (data as TaskResultRow[]) ?? [];
+}
+
+/** How many times this student has submitted this task set. */
+export async function countTaskAttempts(
+  studentId: string,
+  taskSetId: string,
+): Promise<number> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    const data = await devRead();
+    return data.task_results.filter(
+      (r) => r.student_id === studentId && r.task_set_id === taskSetId,
+    ).length;
+  }
+
+  const { count, error } = await supabase()
+    .from("task_results")
+    .select("id", { count: "exact", head: true })
+    .eq("student_id", studentId)
+    .eq("task_set_id", taskSetId);
+  if (error) throw new Error(`countTaskAttempts failed: ${error.message}`);
+  return count ?? 0;
+}
+
+// ---------------------------------------------------------------------------
+// Daily activity / streak (migration-23)
+// ---------------------------------------------------------------------------
+
+/**
+ * Count one action (a completed station task or life-game turn) on `dayISO`,
+ * the YYYY-MM-DD calendar day in Asia/Taipei, computed by the caller.
+ * Read-then-write, as in addPoints: two simultaneous bumps can land as one,
+ * which the streak (actions > 0) does not notice. Returns the new count.
+ */
+export async function bumpDailyActivity(
+  studentId: string,
+  dayISO: string,
+): Promise<number> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    return devMutate((data) => {
+      const existing = data.daily_activity.find(
+        (d) => d.student_id === studentId && d.day === dayISO,
+      );
+      if (existing) {
+        existing.actions += 1;
+        return existing.actions;
+      }
+      data.daily_activity.push({ student_id: studentId, day: dayISO, actions: 1 });
+      return 1;
+    });
+  }
+
+  const db = supabase();
+  const { data: current, error: readError } = await db
+    .from("daily_activity")
+    .select("actions")
+    .eq("student_id", studentId)
+    .eq("day", dayISO)
+    .maybeSingle();
+  if (readError)
+    throw new Error(`bumpDailyActivity read failed: ${readError.message}`);
+  const next = (current?.actions ?? 0) + 1;
+  const { error: writeError } = await db
+    .from("daily_activity")
+    .upsert(
+      { student_id: studentId, day: dayISO, actions: next },
+      { onConflict: "student_id,day" },
+    );
+  if (writeError)
+    throw new Error(`bumpDailyActivity write failed: ${writeError.message}`);
+  return next;
+}
+
+/** Days with activity on or after `sinceDayISO`, oldest first. */
+export async function getDailyActivity(
+  studentId: string,
+  sinceDayISO: string,
+): Promise<DailyActivity[]> {
+  const b = backend();
+  if (b === "none") throw new BackendNotConfiguredError();
+
+  if (b === "dev") {
+    const data = await devRead();
+    return data.daily_activity
+      .filter((d) => d.student_id === studentId && d.day >= sinceDayISO)
+      .sort((a, b) => a.day.localeCompare(b.day));
+  }
+
+  const { data, error } = await supabase()
+    .from("daily_activity")
+    .select()
+    .eq("student_id", studentId)
+    .gte("day", sinceDayISO)
+    .order("day", { ascending: true });
+  if (error) throw new Error(`getDailyActivity failed: ${error.message}`);
+  return (data as DailyActivity[]) ?? [];
+}

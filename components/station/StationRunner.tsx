@@ -1,0 +1,201 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+import { StationFlow, type FlowLine, type SubmitPayload, type SubmitResult } from "@/components/tasks/StationFlow";
+import { StationFlowE } from "@/components/flow/StationFlow";
+import { StationWorkspace } from "@/components/flow/StationWorkspace";
+import type { StationLesson } from "@/lib/tasks/types";
+import type { StepScore } from "@/lib/tasks/scoring";
+import type { AnswerKey } from "@/lib/tasks/publicLesson";
+
+/**
+ * Runs one task set on a page: submits to the right endpoint, re-mounts the
+ * flow for a second attempt, saves takeaways, and on 「回到你的人生」 goes to
+ * /play for one month, which then rides the train to the next station.
+ *
+ * `mode`: "station" and "library" post to /api/task; "terminal" posts to
+ * /api/simulation (the line's simulation result).
+ */
+export function StationRunner({
+  lesson,
+  line,
+  station,
+  studentId,
+  attempt,
+  goal,
+  mode,
+  continueHref,
+  fullLessonHref,
+  fullLessonLabel,
+  initialHook = null,
+  design,
+}: {
+  lesson: StationLesson;
+  line: FlowLine;
+  station: { name: string; code: string } | null;
+  studentId: string;
+  attempt: number;
+  goal: { amount: number; months: number } | null;
+  mode: "station" | "library" | "terminal";
+  continueHref: string;
+  fullLessonHref?: string;
+  fullLessonLabel?: string;
+  /** A hook answered before hydration, from ?hook= (05 A8.6). */
+  initialHook?: string | null;
+  /** Run the Part E flow (06 E8) instead of the older one. */
+  design?: { stationName: string; kicker?: string; exitHref: string; short?: boolean; readingHref?: string | null; foldExpert?: boolean };
+}) {
+  const router = useRouter();
+  // A retry asks the server for the page again: the next attempt's lesson is
+  // shuffled and drawn there (05 A2, A7), so what the student sees always
+  // matches what the server scores. The flow then reopens on the brief.
+  const [retried, setRetried] = useState(false);
+  const [hook, setHook] = useState<string | null>(initialHook);
+  // 06 G1 redo: the missed steps and the carried answers, kept across the
+  // refresh that draws the next attempt.
+  const [redo, setRedo] = useState<{ steps: string[]; carry: Record<string, unknown>; from: number } | null>(null);
+
+  async function submit(p: SubmitPayload): Promise<SubmitResult> {
+    setHook(p.hookAnswer);
+    if (mode === "terminal") {
+      const res = await fetch("/api/simulation", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ line_slug: line.slug, taskSetId: p.taskSetId, answers: p.answers, hookAnswer: p.hookAnswer }),
+      });
+      if (!res.ok) throw new Error(`simulation ${res.status}`);
+      const data = (await res.json()) as {
+        outcome: {
+          score: number;
+          total: number;
+          passed: boolean;
+          details: StepScore[];
+          revealShown: string;
+          attempt: number;
+          answerKey: AnswerKey;
+        };
+      };
+      return {
+        score: data.outcome.score,
+        total: data.outcome.total,
+        passed: data.outcome.passed,
+        details: data.outcome.details,
+        stationDone: true,
+        reveal: data.outcome.revealShown,
+        attempt: data.outcome.attempt,
+        answerKey: data.outcome.answerKey,
+      };
+    }
+    const res = await fetch("/api/task", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(p),
+    });
+    if (!res.ok) throw new Error(`task ${res.status}`);
+    return (await res.json()) as SubmitResult;
+  }
+
+  async function saveTool(name: string) {
+    const res = await fetch("/api/tools", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!res.ok) throw new Error(`tools ${res.status}`);
+  }
+
+  const onRetry =
+    mode === "terminal"
+      ? undefined
+      : () => {
+          setRetried(true);
+          router.refresh();
+        };
+  // 2026-11-02: a station is one page (the workspace); a Short keeps its
+  // one-question flow.
+  if (design && !design.short) {
+    return (
+      <StationWorkspace
+        key={`${lesson.task.id}:${attempt}`}
+        lesson={lesson}
+        stationName={design.stationName}
+        kicker={design.kicker}
+        goal={goal}
+        mode={mode}
+        exitHref={design.exitHref}
+        onSubmit={submit}
+        onSaveTool={saveTool}
+        onContinue={() => router.push(continueHref)}
+        initialHookAnswer={hook}
+        redo={redo && redo.from + 1 === attempt ? { steps: redo.steps, carry: redo.carry } : null}
+        onRedo={
+          mode === "terminal"
+            ? undefined
+            : (steps, carry) => {
+                setRedo({ steps, carry, from: attempt });
+                setRetried(true);
+                router.refresh();
+              }
+        }
+        studentId={studentId}
+        attempt={attempt}
+        readingHref={design.readingHref}
+        foldExpert={design.foldExpert}
+      />
+    );
+  }
+  if (design) {
+    return (
+      <StationFlowE
+        key={`${lesson.task.id}:${attempt}`}
+        lesson={lesson}
+        stationName={design.stationName}
+        kicker={design.kicker}
+        goal={goal}
+        mode={mode}
+        exitHref={design.exitHref}
+        onSubmit={submit}
+        onSaveTool={saveTool}
+        onContinue={() => router.push(continueHref)}
+        onRetry={onRetry}
+        startAtTask={retried}
+        initialHookAnswer={hook}
+        short={design.short}
+        // Only on the attempt the redo was asked for (the next one).
+        redo={redo && redo.from + 1 === attempt ? { steps: redo.steps, carry: redo.carry } : null}
+        onRedo={
+          mode === "terminal"
+            ? undefined
+            : (steps, carry) => {
+                setRedo({ steps, carry, from: attempt });
+                setRetried(true);
+                router.refresh();
+              }
+        }
+        studentId={studentId}
+        attempt={attempt}
+      />
+    );
+  }
+  return (
+    <StationFlow
+      key={`${lesson.task.id}:${attempt}`}
+      lesson={lesson}
+      line={line}
+      station={station}
+      studentId={studentId}
+      attempt={attempt}
+      mode={mode}
+      goal={goal}
+      fullLessonHref={fullLessonHref}
+      fullLessonLabel={fullLessonLabel}
+      onSubmit={submit}
+      onSaveTool={saveTool}
+      onContinue={() => router.push(continueHref)}
+      onRetry={onRetry}
+      startAtTask={retried}
+      initialHookAnswer={hook}
+    />
+  );
+}

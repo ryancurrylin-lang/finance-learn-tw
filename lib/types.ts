@@ -1,0 +1,195 @@
+import type { TaskResult } from "@/lib/tasks/types";
+
+export interface Student {
+  id: string;
+  name: string;
+  school: string;
+  grade: string;
+  // Two independent, optional auth methods on one account — a student can
+  // have either, or both. At least one is always present.
+  access_code: string | null;
+  google_uid: string | null; // Supabase Auth's stable id for the linked Google identity
+  google_email: string | null;
+  points_total: number; // 錢途護照 progress points — a completion counter, not a currency
+  // How this student works through a line. Null means they have never used
+  // the header toggle; the app then behaves as DEFAULT_MODE (lib/modeModel)
+  // without writing it, so nobody is silently opted into a stored preference
+  // they did not pick. The toggle's own pick() is the only writer.
+  mode: StudentMode | null;
+  // Cross-line facts (interest, resolved income). Free-form on purpose so
+  // adding one is not a migration; read and written only through
+  // lib/studentProfile.ts, which validates the shape.
+  profile: Record<string, unknown>;
+  // The character built at onboarding (migration-22): avatar part ids as
+  // JSON, shape owned by components/avatar. Null until built; absent on rows
+  // read before the column existed, so treat undefined as null.
+  avatar?: Record<string, unknown> | null;
+  created_at: string;
+}
+
+/**
+ * sim_first — go straight to the simulation; core stations appear as inline
+ *             tips inside it and reading is optional.
+ * full       — every station in order, then the simulation.
+ *
+ * A view over one content base, not a second set of content.
+ */
+export type StudentMode = "sim_first" | "full";
+
+export interface ModuleProgress {
+  id: string;
+  student_id: string;
+  module_number: number; // global module key (1–42 today), see lib/modules.ts
+  completed_at: string | null;
+  quiz_score: number;
+  quiz_total: number;
+}
+
+export interface SimulationRun {
+  id: string;
+  student_id: string;
+  line_slug: string; // DEPRECATED — superseded by line_id, kept as safety net
+  line_id: number | null; // stable line identity; null only on pre-migration rows
+  // Names the shape of outcome_summary. Null on rows written before the
+  // contract existed, and on any kind this build does not recognise — both
+  // render a neutral state rather than being guessed at. See lib/sims/types.ts.
+  kind: string | null;
+  // rent_choice / savings_rate are specific to the First Salary sim (qixin);
+  // other lines store their inputs in spending_choices and leave these null.
+  rent_choice: string | null;
+  savings_rate: number | null;
+  spending_choices: Record<string, unknown>; // generic per-sim inputs
+  outcome_summary: Record<string, unknown>; // generic per-sim computed outcome
+  created_at: string;
+}
+
+/** A line a student has completed, recorded when it happened (migration-20).
+ * Completion is kept once earned: a station added later never takes it back. */
+export interface LineCompletion {
+  id: string;
+  student_id: string;
+  line_slug: string;
+  completed_at: string;
+}
+
+export interface LineTest {
+  id: string;
+  student_id: string;
+  line_slug: string; // DEPRECATED — superseded by line_id
+  line_id: number | null;
+  phase: "pre" | "post"; // 前測 vs 後測 — the same question bank, taken twice
+  score: number;
+  total: number;
+  /**
+   * Which version of the line's pre/post bank this attempt was taken on
+   * (migration-19). Optional only because file-store rows written before the
+   * column existed lack it; read it through bankVersionOf(), which treats
+   * absent as 1 — the version every pre-existing row was taken on.
+   */
+  bank_version?: number;
+  created_at: string;
+}
+
+export type ClassRoomStatus = "waiting" | "active" | "finished";
+
+/** quiz: the pre/post question round. life: a 人生賽局 round (migration-25). */
+export type ClassRoomKind = "quiz" | "life";
+
+export interface ClassRoom {
+  id: string;
+  code: string;
+  host_token: string; // returned only to the creator, required to start/end the round
+  line_slug: string; // DEPRECATED — superseded by line_id
+  line_id: number | null;
+  status: ClassRoomStatus;
+  started_at: string | null;
+  // migration-25. Optional so rows and code from before it still type-check;
+  // absent means "quiz". A life room's line_slug is 'caiwujuece' only because
+  // the column is NOT NULL; branch on kind, never on line_slug.
+  kind?: ClassRoomKind;
+  seed?: number | null; // the shared life-game seed every team plays (life rooms only)
+  created_at: string;
+}
+
+export interface ClassParticipant {
+  id: string;
+  room_id: string;
+  display_name: string;
+  score: number;
+  total_ms: number | null; // total time to answer all questions, once submitted
+  submitted_at: string | null;
+  team?: string | null; // life rooms only (migration-25); null on quiz rooms
+  joined_at: string;
+}
+
+/**
+ * A 人生賽局 save (migration-21). class_team_id null = the student's one solo
+ * save; otherwise `${class_rooms.id}:${team}` and student_id is the captain.
+ * state is the engine's LifeState, stored as-is; parse it with
+ * LifeStateSchema (lib/lifeGame/types.ts) before trusting it. updated_at is
+ * the optimistic-concurrency token for updateLifeSave.
+ */
+export interface LifeGameSave {
+  id: string;
+  student_id: string;
+  class_team_id: string | null;
+  state: unknown;
+  state_version: number;
+  seed: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One submitted task-set attempt (migration-24). result is the full
+ * TaskResult, stored as jsonb. */
+export interface TaskResultRow {
+  id: string;
+  student_id: string;
+  line_slug: string;
+  station_id: number | null;
+  task_set_id: string;
+  kind: string;
+  score: number;
+  total: number;
+  attempt: number;
+  result: TaskResult;
+  created_at: string;
+}
+
+/** Actions a student took on one Asia/Taipei calendar day (migration-23). */
+export interface DailyActivity {
+  student_id: string;
+  day: string; // YYYY-MM-DD
+  actions: number;
+}
+
+export interface HistoricalPrice {
+  ticker: string;
+  date: string; // YYYY-MM-DD
+  closing_price: number;
+}
+
+export interface SimPortfolio {
+  student_id: string;
+  sim_start_date: string; // real historical date — never shown pre-reveal
+  sim_current_date: string;
+  holdings: Record<string, number>; // ticker -> units, fractional allowed
+  cash_balance: number;
+  last_advanced_at: string;
+  revealed: boolean;
+  created_at: string;
+}
+
+export interface CoachMessage {
+  id: string;
+  simulation_run_id: string;
+  message: string;
+  created_at: string;
+}
+
+export interface DashboardData {
+  student: Pick<Student, "name" | "school" | "grade" | "access_code">;
+  progress: ModuleProgress[];
+  latestRun: SimulationRun | null;
+  coachMessage: CoachMessage | null;
+}

@@ -1,0 +1,444 @@
+"use client";
+
+import { useMemo, useState } from "react";
+import {
+  computeInvesting,
+  INVEST_CHOICES,
+  INVEST_START,
+  taxRateLabel,
+  BROKER_FEE_LABEL,
+  IPO_TIP,
+  type InvestChoiceId,
+  type InvestOutcome,
+  type InvestBand,
+} from "@/lib/sims/investing";
+import { formatNT } from "@/components/Money";
+import { TIMING_OPTIONS, type InvestTiming } from "@/lib/sims/investTiming";
+import { SelectCard, SubmitButton, OutcomeActions } from "@/components/sims/ui";
+import { useSimRun } from "@/components/sims/useSimRun";
+import CoachPanel from "@/components/CoachPanel";
+import PlatformPanel from "@/components/mrt/PlatformPanel";
+import StampReveal from "@/components/mrt/StampReveal";
+import type { OutcomeTitle } from "@/lib/outcomeTitle";
+
+export default function InvestingSim({
+  color,
+  colorInk,
+  investable,
+}: {
+  color: string;
+  colorInk: string;
+  /**
+   * What the student actually has, resolved on the server from their
+   * profile. Shown, not enforced: seeing your real position is the point,
+   * being locked out of a choice because of it is not.
+   */
+  investable?: { amount: number; fromSavingsLine: boolean; inShortfall: boolean };
+}) {
+  const start = investable?.amount ?? INVEST_START;
+  const [choice, setChoice] = useState<InvestChoiceId>("buy0050");
+  const [timing, setTiming] = useState<InvestTiming>("lump");
+  const { submitting, error, result, submit, reset } =
+    useSimRun<InvestOutcome>("touzi");
+
+  // Preview on the real starting sum, not the default — the server computes
+  // the stored result on the same figure, and a preview on NT$50,000 beside
+  // a result on NT$33,946 was two different simulations on one page.
+  const preview = useMemo(
+    () => computeInvesting({ choice, start, timing }),
+    [choice, start, timing],
+  );
+  const canTime = Boolean(INVEST_CHOICES.find((c) => c.id === choice)?.ticker);
+
+  if (result) {
+    return (
+      <InvestOutcomeView
+        outcome={result.outcome}
+        runId={result.runId}
+        color={color}
+        colorInk={colorInk}
+        onReset={reset}
+        outcomeTitle={result.outcomeTitle}
+        pointsAwarded={result.pointsAwarded}
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-8">
+      <section>
+        <p className="text-sm leading-relaxed text-ink-soft">
+          根據你目前的財務狀況，你大概有{" "}
+          <span className="money font-medium text-ink">{formatNT(start)}</span>
+          {investable?.fromSavingsLine
+            ? "（你在存錢線實際存下來的）"
+            : "（預設金額——去存錢線跑一次，這個數字就會變成你自己的）"}
+          。這筆錢，你想怎麼處理？
+        </p>
+        {investable?.inShortfall && (
+          <p className="mt-3 rounded-lg bg-alert/10 px-4 py-3 text-sm leading-relaxed text-ink/90">
+            提醒一下：你在消費線的那個月是差錢收尾的。手上有錢可以投資，跟每個月撐不撐得住，是兩件不同的事——先把月底補起來，通常比先開始投資更要緊。
+          </p>
+        )}
+      </section>
+
+      <fieldset>
+        <legend className="text-xl font-bold">你的選擇</legend>
+        <div className="mt-4 space-y-3">
+          {INVEST_CHOICES.map((c) => (
+            <SelectCard
+              key={c.id}
+              name="choice"
+              selected={choice === c.id}
+              onSelect={() => setChoice(c.id)}
+              color={color}
+              title={c.label}
+              sub={c.blurb}
+            />
+          ))}
+        </div>
+      </fieldset>
+
+      {canTime && (
+        <fieldset>
+          <legend className="text-xl font-bold">怎麼投入？</legend>
+          <p className="mt-1 text-sm text-ink-soft">
+            同一筆錢、同一檔 ETF，可以一次全部買進，也可以分成十二個月慢慢買。兩種都有人用，沒有哪一種一定比較好。
+          </p>
+          <div className="mt-3 space-y-3">
+            {TIMING_OPTIONS.map((t) => (
+              <SelectCard
+                key={t.id}
+                name="timing"
+                selected={timing === t.id}
+                onSelect={() => setTiming(t.id)}
+                color={color}
+                title={t.label}
+                sub={t.blurb}
+              />
+            ))}
+          </div>
+        </fieldset>
+      )}
+
+      <section className="rounded-2xl border border-hairline bg-surface p-5">
+        <p className="text-sm leading-relaxed text-ink-soft">
+          <span className="font-semibold text-ink">重要觀念：</span>
+          投資沒有保證數字。同一筆錢，一年後可能變多、也可能變少——我們會給你一個「範圍」，而不是單一答案。
+          {preview.chosen.sellable &&
+            `（而且只要賣出，就要繳 ${taxRateLabel(preview.chosen.taxRate)} 證交稅——這是 ETF 的稅率，股票是 0.3%；買進和賣出還各要付一次券商手續費。）`}
+        </p>
+      </section>
+
+      {error && (
+        <p className="rounded-lg bg-negative/10 px-4 py-3 text-sm text-negative" role="alert">
+          {error}
+        </p>
+      )}
+
+      <SubmitButton
+        onClick={() => submit({ choice, timing })}
+        disabled={false}
+        submitting={submitting}
+        idleLabel="看看一年後的範圍"
+        disabledLabel=""
+      />
+    </div>
+  );
+}
+
+function BandBar({ band, color }: { band: InvestBand; color: string }) {
+  if (band.id === "spend") {
+    return (
+      <p className="money text-lg font-semibold text-ink-soft">
+        NT$0（財務上）
+      </p>
+    );
+  }
+  if (band.certain) {
+    return (
+      <p className="money text-lg font-semibold">{formatNT(band.mid)}</p>
+    );
+  }
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+      <span className="money text-base text-negative">{formatNT(band.low)}</span>
+      <span className="text-ink-faint">→</span>
+      <span className="money text-lg font-semibold" style={{ color }}>
+        {formatNT(band.mid)}
+      </span>
+      <span className="text-ink-faint">→</span>
+      <span className="money text-base text-positive">{formatNT(band.high)}</span>
+    </div>
+  );
+}
+
+function InvestOutcomeView({
+  outcome,
+  runId,
+  color,
+  colorInk,
+  onReset,
+  outcomeTitle,
+  pointsAwarded,
+}: {
+  outcome: InvestOutcome;
+  runId: string;
+  color: string;
+  colorInk: string;
+  onReset: () => void;
+  outcomeTitle: OutcomeTitle | null;
+  pointsAwarded: number;
+}) {
+  const c = outcome.chosen;
+  const isSpend = c.id === "spend";
+
+  return (
+    <div className="space-y-8">
+      <PlatformPanel color={color} eyebrow="進場站 · 一年後（範圍）">
+        {isSpend ? (
+          <>
+            <h2 className="text-3xl font-black">你把它花掉了</h2>
+            <p className="mt-2 text-[15px] leading-relaxed text-white/85">
+              你換到了當下想要的東西，但這筆 {formatNT(outcome.start)}
+              {outcome.startFromSavingsLine ? "" : "（預設金額）"}就沒有成長的機會了。花或投資沒有絕對對錯——重點是那是不是你有意識的選擇。
+            </p>
+          </>
+        ) : c.certain ? (
+          <>
+            <h2 className="text-4xl font-black">
+              <span className="money">{formatNT(c.mid)}</span>
+            </h2>
+            <p className="mt-2 text-[15px] leading-relaxed text-white/85">
+              放定存幾乎不會虧，一年後大約 {formatNT(c.mid)}。穩，但成長最慢。
+            </p>
+          </>
+        ) : (
+          <>
+            <h2 className="text-3xl font-black">
+              <span className="money">{formatNT(c.low)}</span>
+              <span className="text-white/60"> ~ </span>
+              <span className="money">{formatNT(c.high)}</span>
+            </h2>
+            <p className="mt-2 text-[15px] leading-relaxed text-white/85">
+              選擇「{c.label}」，一年後這筆 {formatNT(outcome.start)}
+              {outcome.startFromSavingsLine ? "" : "（預設金額，不是你存錢線的數字）"}
+              可能落在這個範圍，中間值大約{" "}
+              <span className="money font-semibold text-white">{formatNT(c.mid)}</span>
+              。上下都有可能，這就是風險。
+            </p>
+          </>
+        )}
+        <StampReveal outcomeTitle={outcomeTitle} pointsAwarded={pointsAwarded} />
+      </PlatformPanel>
+
+      {outcome.historical && (
+        <TimingComparison
+          outcome={outcome}
+          color={color}
+          colorInk={colorInk}
+        />
+      )}
+
+      {c.sellable && (
+        <section
+          className="rounded-2xl bg-surface p-5"
+          style={{ borderLeft: `4px solid ${color}` }}
+        >
+          <p className="font-display text-xs font-bold uppercase tracking-wider" style={{ color: colorInk }}>
+            這裡不是美國 · 證交稅
+          </p>
+          <p className="mt-1.5 text-sm leading-relaxed text-ink/90">
+            賺到的價差<span className="font-semibold">不課所得稅</span>；但只要你「賣出」，就會按成交金額課{" "}
+            <span className="font-semibold">{taxRateLabel(c.taxRate)} 證交稅</span>
+            （ETF 的稅率；賣股票是 0.3%），不論賺賠。以中間值 {formatNT(c.mid)} 賣出為例，會被自動收走約{" "}
+            <span className="money font-semibold" style={{ color: colorInk }}>
+              {formatNT(c.taxOnMidSale)}
+            </span>
+            。
+          </p>
+          <p className="mt-2 text-sm leading-relaxed text-ink/90">
+            除了稅，券商每次買、每次賣都收<span className="font-semibold">手續費</span>：參考費率是成交金額的{" "}
+            {BROKER_FEE_LABEL}，很多券商會打折，所以實際通常更低。
+          </p>
+          <dl className="mt-3 divide-y divide-hairline text-sm">
+            <div className="flex justify-between gap-4 py-1.5">
+              <dt className="text-ink-soft">買進手續費（{formatNT(outcome.start)} × {BROKER_FEE_LABEL}）</dt>
+              <dd className="money">{formatNT(c.buyFee)}</dd>
+            </div>
+            <div className="flex justify-between gap-4 py-1.5">
+              <dt className="text-ink-soft">賣出手續費（以中間值賣出）</dt>
+              <dd className="money">{formatNT(c.sellFeeOnMid)}</dd>
+            </div>
+            <div className="flex justify-between gap-4 py-1.5">
+              <dt className="text-ink-soft">證交稅（{taxRateLabel(c.taxRate)}）</dt>
+              <dd className="money">{formatNT(c.taxOnMidSale)}</dd>
+            </div>
+            <div className="flex justify-between gap-4 py-1.5 font-semibold">
+              <dt>一買一賣的總成本</dt>
+              <dd className="money" style={{ color: colorInk }}>{formatNT(c.totalCostOnMid)}</dd>
+            </div>
+          </dl>
+          <p className="mt-2 text-xs text-ink-faint">
+            手續費以參考費率計算、未計折扣。以中間值賣出，扣掉賣出的稅與手續費後實拿約 {formatNT(c.netAfterTaxMid)}。
+          </p>
+        </section>
+      )}
+
+      <section aria-labelledby="cmp-heading">
+        <h3 id="cmp-heading" className="text-lg font-bold">
+          四種選擇，一年後的範圍
+        </h3>
+        <div className="mt-3 space-y-2">
+          {outcome.all.map((b) => {
+            const isChosen = b.id === c.id;
+            return (
+              <div
+                key={b.id}
+                className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-xl border border-hairline bg-surface px-4 py-3"
+                style={isChosen ? { borderColor: color } : undefined}
+              >
+                <span className={isChosen ? "font-bold" : "text-ink-soft"}>
+                  {b.label}
+                  {isChosen ? "（你的選擇）" : ""}
+                </span>
+                <BandBar band={b} color={color} />
+              </div>
+            );
+          })}
+        </div>
+        <p className="mt-2 text-xs text-ink-faint">
+          範圍為教學用的示意，不是預測。紅＝悲觀、黑＝中間、綠＝樂觀。
+        </p>
+        <BandVsRealYear outcome={outcome} />
+      </section>
+
+      <section className="rounded-2xl bg-surface p-5" style={{ borderLeft: `4px solid ${color}` }}>
+        <p className="text-sm leading-relaxed text-ink-soft">
+          <span className="font-semibold text-ink">小提醒 · 抽籤：</span>
+          {IPO_TIP}
+        </p>
+        <p className="mt-2 text-sm leading-relaxed text-ink-soft">
+          <span className="font-semibold text-ink">分散風險：</span>
+          把錢分散到很多家公司（像 ETF），一家表現不好還有其他家撐著。這是降低風險最基本的方法。
+        </p>
+      </section>
+
+      <p className="rounded-lg bg-line-1/10 px-4 py-3 text-xs leading-relaxed text-ink-soft">
+        ⚠️ 這是教育性的模擬與示意數字，不是個人化的投資建議。真實投資有賺有賠，請自行評估。
+      </p>
+
+      <CoachPanel runId={runId} />
+      <OutcomeActions onReset={onReset} resetLabel="換個選擇再試一次" />
+    </div>
+  );
+}
+
+
+/**
+ * Both timings, valued over the same real year. Written to refuse the
+ * question "which was right": the answer exists only in hindsight, and
+ * presenting it as a verdict would turn a lesson about uncertainty into a
+ * recommendation.
+ */
+function TimingComparison({
+  outcome,
+  color,
+  colorInk,
+}: {
+  outcome: InvestOutcome;
+  color: string;
+  colorInk: string;
+}) {
+  const h = outcome.historical;
+  if (!h) return null;
+  const mine = outcome.timing;
+  const legs: Array<{ id: InvestTiming; label: string; value: number }> = [
+    { id: "lump", label: "一次投入", value: h.lump.finalValue },
+    { id: "dca", label: "定期定額", value: h.dca.finalValue },
+  ];
+  const gap = Math.abs(h.lump.finalValue - h.dca.finalValue);
+  const moved = ((h.endPrice - h.startPrice) / h.startPrice) * 100;
+
+  return (
+    <section
+      className="rounded-2xl bg-surface p-5"
+      style={{ borderLeft: `4px solid ${color}` }}
+    >
+      <p
+        className="font-display text-xs font-bold uppercase tracking-wider"
+        style={{ color: colorInk }}
+      >
+        兩種進場方式 · 用真實價格算一次
+      </p>
+      <p className="mt-1.5 text-sm leading-relaxed text-ink/90">
+        把同一筆 {formatNT(outcome.start)} 放進 {h.ticker}，用 {h.from} 到 {h.to}{" "}
+        這一年的真實收盤價算：這一年 {h.ticker} 從 {h.startPrice} 走到 {h.endPrice}（
+        {moved >= 0 ? "+" : ""}
+        {moved.toFixed(1)}%）。
+      </p>
+      <dl className="mt-3 divide-y divide-hairline">
+        {legs.map((l) => (
+          <div
+            key={l.id}
+            className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-2.5"
+          >
+            <dt className="text-sm text-ink-soft">
+              {l.label}
+              {l.id === mine && (
+                <span
+                  className="ml-2 rounded-full px-2 py-0.5 text-[11px] font-semibold text-white"
+                  style={{ background: color }}
+                >
+                  你的選擇
+                </span>
+              )}
+            </dt>
+            <dd className="money font-semibold">{formatNT(l.value)}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="mt-3 text-sm leading-relaxed text-ink/90">
+        {h.betterInHindsight === "same"
+          ? "這一年兩種方式最後幾乎一樣。"
+          : `這一年${h.betterInHindsight === "lump" ? "一次投入" : "定期定額"}多了 ${formatNT(gap)}——`}
+        {h.betterInHindsight !== "same" &&
+          "但這是這一年價格這樣走才會這樣。漲得早、漲得多的年份，一次投入吃到比較多；先跌後漲的年份，定期定額買到比較便宜的平均價。哪一種會贏，要等這一年過完才知道，事前沒有人知道。"}
+        {h.betterInHindsight === "same" && "換一年，差距可能拉開，方向也可能相反。"}
+        所以這不是選對或選錯——是兩種承受波動的方式。
+      </p>
+    </section>
+  );
+}
+
+
+/**
+ * The band is a made-up "ordinary year"; the timing panel above is one real
+ * year. When the real year lands outside the band — 0050 rose about 100% in
+ * the window the seed covers, against a band that tops out at +28% — the two
+ * panels contradict each other unless the page says why.
+ */
+function BandVsRealYear({ outcome }: { outcome: InvestOutcome }) {
+  const h = outcome.historical;
+  const c = outcome.chosen;
+  if (!h || c.certain || c.id === "spend") return null;
+  const realMultiple = h.endPrice / h.startPrice;
+  const realValue = Math.round(outcome.start * realMultiple);
+  const above = realValue > c.high;
+  const below = realValue < c.low;
+  const pctMoved = ((realMultiple - 1) * 100).toFixed(1);
+  return (
+    <p className="mt-3 rounded-lg bg-bg px-4 py-3 text-sm leading-relaxed text-ink/90">
+      <span className="font-semibold">為什麼跟上面真實價格的結果不一樣？</span>
+      這個範圍是「一般年份大概會落在哪」的示意；上面用的是 {h.from} 到 {h.to} 真實發生的一年，
+      {h.ticker} 那一年 {Number(pctMoved) >= 0 ? "+" : ""}
+      {pctMoved}%，一次投入會變成約 {formatNT(realValue)}。
+      {above
+        ? "那一年漲得比這個範圍的樂觀情況還多——真實的一年可以遠遠超出「一般」的範圍。"
+        : below
+          ? "那一年跌得比這個範圍的悲觀情況還多——真實的一年可以遠遠低於「一般」的範圍。"
+          : "那一年剛好落在這個範圍裡面。"}
+      範圍不是天花板也不是地板，換一年，結果可能完全不同。
+    </p>
+  );
+}

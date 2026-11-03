@@ -1,0 +1,327 @@
+/*
+  06 E8.6: the life-game turn. [bar][rail][money strip 40][world band 160]
+  [step card region, flex 1]. The page never scrolls: only the card does,
+  with its buttons pinned to the card's bottom edge. The world band hides
+  under 740px of viewport height. The step bodies' own look (play.module.css)
+  switches to Part E under [data-design="e"].
+*/
+.turn {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--paper);
+}
+
+.strip {
+  display: flex;
+  align-items: center;
+  gap: var(--s-5);
+  box-sizing: border-box;
+  height: 40px;
+  margin: 0;
+  padding: 0 var(--gutter);
+  border-bottom: 1px solid var(--hairline);
+}
+.strip > div {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+}
+.strip dt {
+  font: 400 0.75rem/1rem var(--font-ui);
+  color: var(--ink-3);
+}
+.strip dd {
+  margin: 0;
+  font: 600 0.9375rem/1.375rem var(--font-ui);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.notice {
+  padding: var(--s-2) var(--gutter) 0;
+}
+
+.region {
+  display: flex;
+  justify-content: center;
+  flex: 1;
+  min-height: 0;
+  padding: var(--s-3) var(--gutter) max(var(--s-4), env(safe-area-inset-bottom));
+}
+.card {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 600px;
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--s-4) 18px 0;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--e2);
+  animation: enter 200ms var(--ease-out) both;
+}
+.cardWide {
+  max-width: 1000px;
+}
+@keyframes enter {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .card {
+    animation: fade 120ms linear both;
+  }
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+
+/* ---- Part E type and buttons inside the step bodies (E4.2, E7.3) ---- */
+.turn :global(.g-question) {
+  margin: 0;
+  font: 700 1.5rem/2.125rem var(--font-voice);
+  color: var(--ink);
+}
+.turn :global(.g-title) {
+  margin: 0;
+  font: 700 1.0625rem/1.5rem var(--font-ui);
+}
+.turn :global(.g-body) {
+  margin: 0;
+  font: 400 1.0625rem/1.75rem var(--font-ui);
+  color: var(--ink-2);
+}
+.turn :global(.g-label) {
+  margin: 0;
+  font: 600 0.8125rem/1.125rem var(--font-ui);
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+}
+.turn :global(.g-caption) {
+  margin: 0;
+  font: 400 0.75rem/1.125rem var(--font-ui);
+  color: var(--ink-3);
+}
+.turn :global(.g-card-number),
+.turn :global(.g-hero-number) {
+  margin: 0;
+  font: 700 1.375rem/1.75rem var(--font-ui);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+.turn :global(.g-num) {
+  font-variant-numeric: tabular-nums;
+}
+.turn :global(.g-btn) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  box-sizing: border-box;
+  width: 100%;
+  height: 52px;
+  padding: 0 var(--s-4);
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--ink);
+  color: var(--ink-inv);
+  font: 700 1.0625rem/1.375rem var(--font-ui);
+  text-decoration: none;
+  cursor: pointer;
+  transition: transform var(--dur-press) var(--spring-snappy);
+}
+.turn :global(.g-btn:active) {
+  transform: scale(0.97);
+  background: color-mix(in oklab, var(--ink), #fff 14%);
+}
+@media (hover: hover) {
+  .turn :global(.g-btn:hover) {
+    background: color-mix(in oklab, var(--ink), #fff 8%);
+  }
+}
+.turn :global(.g-btn[aria-disabled="true"]),
+.turn :global(.g-btn:disabled) {
+  background: var(--track);
+  color: var(--ink-3);
+  cursor: default;
+  transform: none;
+}
+.turn :global(.g-btn:focus-visible) {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .turn :global(.g-btn:active) {
+    transform: none;
+  }
+}
+
+/* E7.15: the cash change, shown for 600ms beside the counting number. */
+.strip dd {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+}
+.change {
+  font: 600 0.75rem/1rem var(--font-ui);
+  font-variant-numeric: tabular-nums;
+}
+.up,
+.cash:global(.g-anim-num--gain) {
+  color: var(--good);
+}
+.down,
+.cash:global(.g-anim-num--loss) {
+  color: var(--bad);
+}
+@media (max-width: 380px) {
+  .change {
+    display: none;
+  }
+}
+
+/* ---- the month on one page (2026-11-02) ---- */
+.desk {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.flowPanel {
+  display: none;
+}
+.stepKicker {
+  margin: 0 0 var(--s-2);
+  font: 700 0.8125rem/1.25rem var(--font-ui);
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+}
+@media (min-width: 1024px) {
+  .desk {
+    flex-direction: row;
+    gap: 24px;
+    width: 100%;
+    max-width: 1240px;
+    box-sizing: border-box;
+    margin: 0 auto;
+    padding: 16px 32px 0;
+  }
+  .desk .region {
+    flex: 1;
+    padding: 0 0 24px;
+  }
+  .desk .card,
+  .desk .cardWide {
+    max-width: none;
+  }
+  .flowPanel {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    flex: 0 0 320px;
+    align-self: flex-start;
+    padding: 20px;
+    border-radius: var(--r-xl);
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    box-shadow: var(--e1);
+  }
+}
+.flowTitle {
+  margin: 0;
+  font: 800 1rem/1.4rem var(--font-ui);
+}
+.flowList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.flowList li {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  border-radius: 14px;
+  color: var(--ink-3);
+}
+.flowList li b {
+  display: block;
+  font: 700 0.9375rem/1.3rem var(--font-ui);
+}
+.flowList li small {
+  display: block;
+  font: 500 0.8125rem/1.25rem var(--font-ui);
+}
+.flowList li[data-state="on"] {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.flowList li[data-state="done"] {
+  color: var(--ink-2);
+}
+.flowDot {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  font: 800 0.75rem/1 var(--font-ui);
+}
+.flowList li[data-state="on"] .flowDot {
+  background: var(--ink);
+  color: var(--ink-inv);
+}
+.flowList li[data-state="done"] .flowDot {
+  background: var(--good-soft);
+  color: var(--good);
+}
+.flowNums {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 0;
+}
+.flowNums div {
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: var(--surface-2);
+}
+.flowNums dt {
+  font: 600 0.75rem/1.1rem var(--font-ui);
+  color: var(--ink-3);
+}
+.flowNums dd {
+  margin: 2px 0 0;
+  font: 800 1rem/1.4rem var(--font-ui);
+  font-variant-numeric: tabular-nums;
+}
+.flowNote {
+  margin: 0;
+  font: 500 0.8125rem/1.3rem var(--font-ui);
+  color: var(--ink-3);
+}
+.stepHelp {
+  margin: 0 0 var(--s-3);
+  font: 500 0.875rem/1.35rem var(--font-ui);
+  color: var(--ink-2);
+}
+@media (min-width: 1024px) {
+  .stripPhone,
+  .stepHelp {
+    display: none;
+  }
+}

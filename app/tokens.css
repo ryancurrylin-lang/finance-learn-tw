@@ -1,0 +1,286 @@
+/*
+  Finline design tokens (06 Part E, section E2). The values come from the
+  spec text; the mockups/tokens.css it was written from is not in the repo,
+  so anything the spec does not state is marked TODO-SPEC with the value used
+  for now, and listed in the STOP 1 report. Components never hold raw hex
+  (E2.1); the character and scene art are the only exception.
+
+  Light tokens live on :root. Light only (2026-10-24): the glass, the
+  paper and the Metro colors were designed for light, and the user rejected
+  the dark version, so there is no dark mode anywhere.
+*/
+
+:root,
+.game-shell,
+.fl-shell {
+  color-scheme: light;
+  /* ---- color, light (E2.2) ---- */
+  /* 2026-10-24 redesign: 錢途 palette (the site's own) + Taipei Metro colors. */
+  --paper: #f2f3f4;
+  --surface: #ffffff;
+  --surface-2: #f6f7f9;
+  --ink: #14171a;
+  --ink-2: #3d4650;
+  --ink-3: #5c6670;
+  --ink-inv: #ffffff;
+  --ink-inv-2: #c9d3db;
+  --hairline: rgba(20, 23, 26, 0.08);
+  --hairline-strong: rgba(20, 23, 26, 0.16);
+  --track: #e3e6ea;
+  --signal: #f8b61c;
+  --signal-deep: #d99a00;
+  --focus: #0070bd;
+  --good: #0b6e51;
+  --warn: #8f4b00;
+  --bad: #b3261e;
+  --info: #1f5fb8;
+  --money: #8a6508;
+  --good-soft: #e3f3ec;
+  --warn-soft: #fff1de;
+  --bad-soft: #fde7e7;
+  --info-soft: #e6eefb;
+  /* The streak flame's fill: decorative, the number carries the meaning (E7.1). */
+  --flame: #c45a00;
+  /* The station sign and the name plate stay dark in dark mode, like a real
+     station sign (decided at STOP 1): --ink's light value, never flipped. */
+  --sign: #14171a;
+  --sign-ink: #ffffff;
+  --sign-ink-2: #c9d3db;
+  /* Taipei Metro's four colors: the stripe, station codes, section stations. */
+  --metro-red: #e3002c;
+  --metro-blue: #0070bd;
+  --metro-green: #008659;
+  --metro-yellow: #f8b61c;
+  --stripe: linear-gradient(90deg, var(--metro-red) 0 25%, var(--metro-blue) 25% 50%, var(--metro-green) 50% 75%, var(--metro-yellow) 75% 100%);
+  /* Liquid Glass: navigation and controls only, over content. */
+  --glass: rgba(255, 255, 255, 0.6);
+  --glass-strong: rgba(255, 255, 255, 0.82);
+  --glass-blur: blur(26px) saturate(170%);
+  --glass-edge: rgba(255, 255, 255, 0.85);
+  --glass-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 18px 48px rgba(20, 23, 26, 0.09);
+  /* The departure board: dark, amber figures. */
+  --board: #101316;
+  --board-ink: #f2f3f4;
+  --board-dim: #8792a0;
+  --board-amber: #ffb81c;
+  /* Behind sheets and the alert on Regular width (E3, E7.14). */
+  --backdrop: rgba(14, 20, 27, 0.45);
+
+  /* Line color: set per page on a wrapper (E2.1). TODO-SPEC: the mix
+     percentages for --line-ink and --line-soft are not stated in 06; the
+     contrast script checks every line against these. */
+  --line: #5f6c79;
+  --line-ink: color-mix(in oklab, var(--line), #000 38%);
+  --line-soft: color-mix(in oklab, var(--line), #fff 88%);
+
+  /* ---- material: the top bar and the tab bar only (E1, E7.1) ----
+     TODO-SPEC: the light material values are not stated in 06 (only the dark
+     fill is). */
+  --material: rgba(255, 255, 255, 0.6);
+  --material-blur: blur(26px) saturate(170%);
+  --material-border: var(--hairline);
+
+  /* ---- shape (E2.6) ---- */
+  --r-xs: 8px;
+  --r-sm: 12px;
+  --r-md: 16px;
+  --r-lg: 24px;
+  --r-xl: 32px;
+  --r-pill: 999px;
+
+  /* ---- elevation (E2.6) ---- */
+  --e1: 0 1px 2px rgba(20, 23, 26, 0.05), 0 2px 8px rgba(20, 23, 26, 0.04);
+  --e2: 0 1px 2px rgba(20, 23, 26, 0.04), 0 12px 32px rgba(20, 23, 26, 0.06);
+  --e3: 0 2px 4px rgba(20, 23, 26, 0.06), 0 24px 56px rgba(20, 23, 26, 0.12);
+
+  /* ---- space: the 4pt grid, no other values (E2.6) ---- */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-7: 32px;
+  --s-8: 40px;
+  --s-9: 56px;
+  --gutter: 16px;
+
+  /* ---- layout (E3, E7.1, E7.13) ---- */
+  --bar-h: 56px;
+  --tab-h: 49px;
+  --rail-h: 8px;
+  --safe-bottom: max(34px, env(safe-area-inset-bottom));
+
+  /* ---- type (E4) ---- */
+  --font-ui: var(--font-inter, "Inter"), "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  /* The rounded Huninn face read as childish (2026-10-24); the voice is Noto Sans TC, heavier. */
+  --font-voice: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  --font-sign: var(--font-barlow, "Barlow Condensed"), "Arial Narrow", sans-serif;
+
+  /* ---- motion (E12). Springs from spring.py's model: a damped spring
+     x(t) = 1 - e^(-ζωt)(cos ωd t + ζω/ωd sin ωd t), sampled over the settle
+     time. snappy ζ .86 ω 28 settles 294ms, overshoot 0.5%; soft ζ .72 ω 20
+     settles 384ms, overshoot 3.8%. ---- */
+  --spring-snappy: linear(0, 0.0483, 0.1589, 0.2942, 0.4313, 0.5574, 0.6662, 0.7559, 0.8271, 0.8818, 0.9225, 0.9519, 0.9725, 0.9863, 0.9951, 1.0005, 1.0034, 1.0047, 1.005, 1.0048, 1.0042, 1.0035, 1.0028, 1.0022, 1);
+  --spring-soft: linear(0, 0.0438, 0.1492, 0.2849, 0.4287, 0.5659, 0.6877, 0.79, 0.8716, 0.9335, 0.9779, 1.0078, 1.026, 1.0353, 1.0384, 1.0372, 1.0334, 1.0283, 1.0227, 1.0174, 1.0126, 1.0086, 1.0053, 1.0029, 1);
+  /* TODO-SPEC: --ease-out and --ease-in are named but not given in 06; these
+     are the curves the game shell already used. */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-in: cubic-bezier(0.55, 0, 1, 0.45);
+  --dur-press: 100ms;
+  --dur-quick: 160ms;
+  --dur-base: 290ms;
+  --dur-soft: 380ms;
+  --dur-ride: 900ms;
+}
+
+/*
+  The names the older screens and documents use, pointed at the Part E
+  tokens, in both shells, until each screen is rebuilt. Solid cards, no blur
+  on content (E1). Documents read --card-strong, --ink-muted and so on.
+*/
+.game-shell,
+.fl-shell {
+  --card: var(--surface);
+  --card-strong: var(--surface);
+  --card-border: var(--hairline);
+  --card-blur: 0px;
+  --ink-muted: var(--ink-3);
+  --ink-inverse: var(--ink-inv);
+  --ink-inverse-muted: var(--ink-inv-2);
+  --chip-off: var(--surface-2);
+  --good-ink: var(--good);
+  --money-ink: var(--money);
+  --shadow-card: var(--e2);
+  --shadow-float: var(--e3);
+  --shadow-pill: var(--e1);
+  --radius-card: var(--r-lg);
+  --radius-inner: var(--r-sm);
+  --radius-pill: var(--r-pill);
+  --radius-sign: var(--r-xs);
+
+  /* Tailwind utilities inside the shell read the Part E tokens. */
+  --color-ink: var(--ink);
+  --color-surface: var(--surface);
+  --color-hairline: var(--hairline);
+  --color-bg: var(--paper);
+  --doc-border: var(--hairline);
+}
+
+/* The older shell's spacing, type and motion names, for older components
+   (step views, documents) shown inside the Part E shell. */
+.fl-shell {
+  --station-wall: #d5dde3;
+  --station-tile-line: #c3cdd5;
+  --station-tunnel: #1b232b;
+  --station-glass: #2e3b47;
+  --station-glass-shine: rgba(255, 255, 255, 0.06);
+  --station-mullion: #8c99a3;
+  --station-door-header: #2b3440;
+  --station-floor: #aeb8c0;
+  --station-floor-seam: rgba(22, 32, 42, 0.05);
+  --station-edge: #f2c200;
+  --station-edge-dark: #ddb100;
+  --font-body: var(--font-ui);
+  --text-hero: 34px;
+  --text-card-number: 26px;
+  --text-title: 22px;
+  --text-question: 20px;
+  --text-body: 15px;
+  --text-label: 13px;
+  --text-caption: 12px;
+  --space-1: 4px;
+  --space-2: 6px;
+  --space-3: 8px;
+  --space-4: 10px;
+  --space-5: 12px;
+  --space-6: 14px;
+  --space-7: 16px;
+  --space-8: 18px;
+  --space-9: 20px;
+  --space-10: 24px;
+  --space-11: 28px;
+  --space-12: 32px;
+  --card-pad: 18px;
+  --card-gap: 14px;
+  --column-gap: 24px;
+  --ease-in-fast: var(--ease-in);
+  --dur-slow: 600ms;
+  --dur-fade: 290ms;
+  --stagger: 40ms;
+  --count-ms: 500ms;
+  --flash-ms: 600ms;
+}
+
+/* linear() needs Chrome 113, Safari 17.2, Firefox 112 (E12). */
+@supports not (transition-timing-function: linear(0, 1)) {
+  :root {
+    --spring-snappy: var(--ease-out);
+    --spring-soft: var(--ease-out);
+  }
+}
+
+/* ---- per-line colors (E2.1) ----
+   A custom property's var() resolves where it is declared, so --line-soft
+   and --line-ink declared on :root keep :root's --line. Re-declare them on
+   every element that sets its own --line (lineVars). */
+[style*="--line:"] {
+  --line-ink: var(--line-ink-light, color-mix(in oklab, var(--line), #000 38%));
+  --line-soft: color-mix(in oklab, var(--line), #fff 88%);
+}
+/* ---- increased contrast (E2.3) ---- */
+@media (prefers-contrast: more) {
+  :root {
+    --good: #075a41;
+    --warn: #6e3900;
+    --bad: #8f1912;
+    --info: #154a94;
+    --money: #6b4e04;
+    --ink-2: #26313c;
+    --ink-3: #3d4a57;
+    --hairline: rgba(21, 32, 43, 0.45);
+    --hairline-strong: rgba(21, 32, 43, 0.65);
+  }
+}
+/* ---- reduced transparency (E7.1) and the low-end flag (E17) ---- */
+@media (prefers-reduced-transparency: reduce) {
+  :root,
+  .game-shell,
+  .fl-shell {
+    --material: var(--surface);
+    --material-blur: none;
+    --glass: var(--surface);
+    --glass-strong: var(--surface);
+    --glass-blur: none;
+  }
+}
+/* The shells re-declare the tokens, so the flag on <html> must reach them too. */
+[data-lowend],
+[data-lowend] .game-shell,
+[data-lowend] .fl-shell {
+  --material: var(--surface);
+  --material-blur: none;
+  --glass: var(--surface);
+  --glass-strong: var(--surface);
+  --glass-blur: none;
+  --spring-snappy: var(--ease-out);
+  --spring-soft: var(--ease-out);
+}
+
+/* ---- continuous corners where supported (E2.6) ---- */
+@supports (corner-shape: squircle) {
+  .squircle {
+    corner-shape: squircle;
+  }
+}
+
+/* ---- motion safety net (E12) ---- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 120ms !important;
+  }
+}

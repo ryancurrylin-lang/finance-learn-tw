@@ -1,0 +1,263 @@
+@import "tailwindcss";
+@import "./tokens.css";
+
+/*
+  Design tokens — grounded in the Taipei Metro system. Platform-tile grey
+  background (not the warm-cream that's become an AI-design tell), near-black
+  charcoal ink, steel-grey rail for structural dividers, safety-orange alert
+  reserved for 常見錯誤 callouts and warning states, near-black+amber board
+  colors used only inside the 情報站 split-flap component.
+*/
+@theme {
+  --color-bg: #f3f4f5; /* finline-bg */
+  --color-surface: #ffffff;
+  --color-ink: #14171a; /* finline-ink */
+  --color-ink-soft: #4b5563;
+  --color-ink-faint: #5b6672; /* AA (>=4.5:1) on both bg and white */
+  --color-hairline: #c7ccd1; /* finline-rail — steel-grey, like handrails */
+
+  --color-alert: #e8542a; /* finline-alert — safety-orange, 常見錯誤 + warnings only */
+  --color-board: #0b0e11; /* finline-board — 情報站 split-flap background */
+  --color-board-text: #f2c744; /* finline-board-text — 情報站 split-flap digits */
+
+  /* Taipei Metro line colors, one per module (chrome accents, not the same
+     as a course line's own wayfinding color — see lib/lines.ts for those) */
+  --color-line-1: #e3002c; /* 紅線  Module 1 */
+  --color-line-2: #0070bd; /* 藍線  Module 2 */
+  --color-line-3: #008659; /* 綠線  Module 3 */
+  --color-line-4: #f8b61c; /* 橘線  Module 4 */
+  --color-line-5: #c48c31; /* 棕線  Module 5 */
+
+  /* Text-safe (AA on off-white) variants for the lighter lines */
+  --color-line-4-ink: #8a5a00;
+  --color-line-5-ink: #7f5a1e;
+
+  --color-positive: #008659;
+  --color-negative: #c8102e;
+
+  --font-display: var(--font-taipei-sans-tc), var(--font-space-grotesk);
+  --font-tc: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui,
+    sans-serif;
+  --font-mono: var(--font-ibm-plex-mono);
+
+  --radius-card: 16px;
+}
+
+@layer base {
+  :root {
+    color-scheme: light;
+    /* Taipei Sans TC Beta (台北黑體) — loaded at runtime via FontLink
+       (jsDelivr, https://github.com/vp-tw/taipei-sans-tc), same deferred
+       pattern as Noto Sans TC below. Declares font-family "Taipei Sans TC"
+       directly rather than a next/font CSS variable. */
+    --font-taipei-sans-tc: "Taipei Sans TC";
+  }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background: var(--color-bg);
+    color: var(--color-ink);
+    font-family: var(--font-tc), var(--font-display), system-ui, -apple-system,
+      "PingFang TC", "Microsoft JhengHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    line-height: 1.7;
+  }
+
+  h1, h2, h3, h4 {
+    line-height: 1.25;
+    font-weight: 700;
+    text-wrap: balance;
+  }
+
+  /* Strong, consistent keyboard focus for every interactive element */
+  :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+    outline: 3px solid var(--color-line-2);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+
+  /* A label wrapping a visually-hidden control has to carry that control's
+     focus ring itself. SelectCard — the option control nearly every
+     simulation is built from — hides its radio with .sr-only, which clips it
+     to 1px, so the ring drawn above lands on something invisible and a
+     keyboard user choosing an option sees nothing at all. Matching
+     :focus-visible rather than :focus-within keeps it off mouse clicks,
+     which also focus the hidden input via the label. */
+  label:has(> input.sr-only:focus-visible) {
+    outline: 3px solid var(--color-line-2);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--color-line-2) 22%, transparent);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *, *::before, *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+  }
+}
+
+@layer utilities {
+  /* Ledger-style figures: IBM Plex Mono, tabular */
+  .money {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+  .display {
+    font-family: var(--font-display);
+    letter-spacing: -0.02em;
+  }
+
+  /* Station page content blocks (UI/UX overhaul spec section 3): a single
+     consistent 24px gap between every stacked block (情報站 box, comparison
+     pair, micro-check card, 常見錯誤 callout, prose sections) regardless of
+     which ones appear or in what order — no per-component margin to
+     maintain. The comparison pair (Compare in lesson.tsx) is one child of
+     this flow, so it gets this 24px gap as a unit; its own two cards use a
+     separate, smaller gap since they're a paired unit, not independent
+     blocks. */
+  .station-content-flow > * + * {
+    margin-top: 24px;
+  }
+
+  /* Article/station page right-rail layout (UI/UX overhaul spec section 5).
+     680px caps the reading width at a comfortable line length regardless of
+     screen size; the 320px rail holds only the progress-through-station
+     indicator (情報站 boxes stay inline in the main column — see the spec
+     doc for why that part is deferred). */
+  .station-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 680px) 320px;
+    gap: 48px;
+    max-width: 1120px;
+    margin: 0 auto;
+    align-items: start;
+  }
+
+  .station-rail {
+    position: sticky;
+    top: 88px; /* ~72px nav height + 16px buffer */
+  }
+
+  @media (max-width: 1023px) {
+    .station-layout {
+      grid-template-columns: 1fr;
+    }
+    .station-rail {
+      position: static;
+    }
+  }
+}
+
+/*
+  Lightweight MRT motion — CSS-only, used sparingly on "full immersive"
+  screens only (dashboard, simulation intro/outro, transfer/certificate,
+  station transition). Covered by the prefers-reduced-motion override above
+  since that rule targets *, *::before, *::after globally.
+*/
+@keyframes mrt-pulse {
+  0%, 100% { opacity: 0.55; transform: scale(0.94); }
+  50% { opacity: 1; transform: scale(1.05); }
+}
+.mrt-pulse {
+  animation: mrt-pulse 2.4s ease-in-out infinite;
+  transform-origin: center;
+}
+
+@keyframes mrt-node-ping {
+  0% { transform: scale(0.85); opacity: 0.55; }
+  75%, 100% { transform: scale(2.1); opacity: 0; }
+}
+.mrt-node-ping {
+  animation: mrt-node-ping 2.2s cubic-bezier(0, 0, 0.2, 1) infinite;
+  /* This circle is a child inside a much larger SVG canvas (the line map),
+     not a standalone icon — SVG elements default to transform-box: view-box,
+     so "center" resolved to the *canvas's* center, not this circle's own
+     position. The ring scaled around that distant point instead of in
+     place, reading as drifting away and fading rather than pulsing. */
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+@keyframes mrt-slide-in {
+  from { opacity: 0; transform: translateX(-10px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.mrt-slide-in {
+  animation: mrt-slide-in 0.5s ease-out both;
+}
+
+/*
+  情報站 split-flap settle — the app's one deliberate motion moment (section
+  7). On mount, the stat briefly "clicks" through a couple of positions
+  before settling, like a real departure board flipping to the next
+  arrival. Covered by the prefers-reduced-motion override above.
+*/
+@keyframes board-flip {
+  0% { transform: rotateX(-85deg) translateY(-2px); opacity: 0; }
+  35% { transform: rotateX(18deg) translateY(1px); opacity: 1; }
+  55% { transform: rotateX(-10deg); }
+  75% { transform: rotateX(5deg); }
+  100% { transform: rotateX(0deg) translateY(0); }
+}
+.board-flip {
+  display: inline-block;
+  transform-origin: 50% 20%;
+  animation: board-flip 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+/*
+  06 Part E tokens as Tailwind utilities (E2.1): bg-paper, text-ink-2,
+  rounded-r-md, shadow-e2 and so on. Names that already mean something on
+  the public pages (ink, surface, hairline, bg) are pointed at the new tokens
+  inside .game-shell only (app/(game)/game.css).
+*/
+@theme inline {
+  --color-paper: var(--paper);
+  --color-surface-2: var(--surface-2);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-ink-inv: var(--ink-inv);
+  --color-ink-inv-2: var(--ink-inv-2);
+  --color-hairline-strong: var(--hairline-strong);
+  --color-track: var(--track);
+  --color-signal: var(--signal);
+  --color-signal-deep: var(--signal-deep);
+  --color-focus: var(--focus);
+  --color-good: var(--good);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+  --color-info: var(--info);
+  --color-money: var(--money);
+  --color-good-soft: var(--good-soft);
+  --color-warn-soft: var(--warn-soft);
+  --color-bad-soft: var(--bad-soft);
+  --color-info-soft: var(--info-soft);
+  --color-line: var(--line);
+  --color-line-ink: var(--line-ink);
+  --color-line-soft: var(--line-soft);
+  --radius-r-xs: var(--r-xs);
+  --radius-r-sm: var(--r-sm);
+  --radius-r-md: var(--r-md);
+  --radius-r-lg: var(--r-lg);
+  --radius-r-xl: var(--r-xl);
+  --shadow-e1: var(--e1);
+  --shadow-e2: var(--e2);
+  --shadow-e3: var(--e3);
+}

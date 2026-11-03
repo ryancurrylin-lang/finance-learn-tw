@@ -1,0 +1,105 @@
+import type { Metadata } from "next";
+import { Space_Grotesk, IBM_Plex_Mono } from "next/font/google";
+import "./globals.css";
+import TourProvider from "@/components/tour/TourProvider";
+import FontLink from "@/components/FontLink";
+
+const spaceGrotesk = Space_Grotesk({
+  variable: "--font-space-grotesk",
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  display: "swap",
+});
+
+const ibmPlexMono = IBM_Plex_Mono({
+  variable: "--font-ibm-plex-mono",
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  display: "swap",
+});
+
+// Noto Sans TC (CJK) is loaded from Google Fonts at runtime, not self-hosted
+// via next/font: Google serves it as small on-demand unicode-range subsets,
+// which keeps the critical CSS tiny (self-hosting inlines ~100 @font-face
+// rules, ~140KB, into the render-blocking CSS and hurts LCP). See FontLink.
+const NOTO_TC_HREF =
+  "https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap";
+
+// Taipei Sans TC (the public site's display face) is loaded by the (site)
+// and (game) layouts, not here: the Part E shell does not use it.
+
+const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
+
+export const metadata: Metadata = {
+  metadataBase: new URL(siteUrl),
+  title: {
+    default: "錢途 — 給台灣高中生的免費理財學習平台",
+    template: "%s ｜ 錢途",
+  },
+  description:
+    "錢途是給台灣高中生的免費理財學習平台。「路線」——職涯、存錢、消費、信用、投資——每條都配一套文章課程與一個真實情境模擬，用台灣的規則與數字學會做財務決定。",
+  applicationName: "錢途",
+  keywords: [
+    "理財教育",
+    "高中生理財",
+    "台灣理財課程",
+    "預算",
+    "複利",
+    "台股",
+    "0050",
+    "勞退",
+    "健保",
+    "證交稅",
+  ],
+  authors: [{ name: "錢途" }],
+  openGraph: {
+    type: "website",
+    locale: "zh_TW",
+    siteName: "錢途",
+    title: "錢途 — 給台灣高中生的免費理財學習平台",
+    description:
+      "四條路線，每條都配一套課程與模擬。每條線，都從這裡出發。",
+  },
+  robots: { index: true, follow: true },
+  icons: { icon: "/icon.svg" },
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html
+      lang="zh-Hant-TW"
+      className={`${spaceGrotesk.variable} ${ibmPlexMono.variable} h-full`}
+    >
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link
+          rel="preconnect"
+          href="https://fonts.gstatic.com"
+          crossOrigin="anonymous"
+        />
+        <FontLink href={NOTO_TC_HREF} />
+        <noscript>
+          {/* eslint-disable-next-line @next/next/no-page-custom-font */}
+          <link rel="stylesheet" href={NOTO_TC_HREF} />
+        </noscript>
+      </head>
+      <body className="min-h-full flex flex-col bg-bg text-ink">
+        <a
+          href="#content"
+          className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-ink focus:px-4 focus:py-2 focus:text-white"
+        >
+          跳到主要內容
+        </a>
+        {/* Wraps every route group's layout: the tour's replay control
+            lives in the site header and in the game shell's settings menu,
+            so the engine has to sit above both. Header and footer belong to
+            app/(site)/layout.tsx; the game shell (app/(game)) has neither. */}
+        <TourProvider>{children}</TourProvider>
+      </body>
+    </html>
+  );
+}

@@ -1,0 +1,512 @@
+/**
+ * The shared contract for simulation results.
+ *
+ * Every terminal simulation stores a JSON outcome, and several features read
+ * it back by field name: the AI coach, the 護照 stamp, and the completion
+ * certificate. Nothing used to enforce that those readers and the writer
+ * agreed. When 信用線's simulation was replaced, the stored shape changed,
+ * three readers kept reaching for fields that no longer existed, and all three
+ * rendered confident wrong numbers — NT$0 figures and a housing stamp on a
+ * credit-card simulation — while the build stayed green.
+ *
+ * Two decisions follow from that.
+ *
+ * `kind` is NOT the line slug. The slug stayed 'xinyong' across that swap,
+ * which is exactly why the old and new rows became indistinguishable. `kind`
+ * names the SHAPE of the stored outcome and carries a version, so replacing a
+ * line's simulation mints a new kind and leaves historical rows readable as
+ * what they actually are. A line may have several kinds over its life.
+ *
+ * Schemas declare exactly the read surface. Each lists the fields some
+ * consumer depends on and nothing else; zod strips the rest on parse, so a
+ * consumer physically cannot reach a field the contract does not promise.
+ * That exactness is deliberate — an earlier draft used .passthrough(), which
+ * infers an index signature and let `outcome.totalInterest` typecheck against
+ * an investing result. Extra fields on the stored outcome are still fine: the
+ * full outcome is what gets persisted, and this schema only governs what
+ * consumers may read back.
+ */
+
+import { z } from "zod";
+import { legacyRecordValue } from "@/lib/sims/creditCard";
+import {
+  INTEREST_IDS,
+  CREDIT_RECORD_VALUES,
+  type CreditRecordValue,
+} from "@/lib/studentProfile";
+
+import { TERMINAL_TASK_KINDS } from "@/lib/tasks/terminal";
+
+// --- kinds ------------------------------------------------------------------
+// Append-only. Never reuse or repurpose a kind: old rows still carry it.
+// When a line's simulation is replaced, add a new kind, leave the old one
+// here, and give it a legacy renderer or let it fall back.
+
+export const SIM_KINDS = [
+  "zhiya_career_choice_v1",
+  "qixin_salary_v1", // retired — 起薪線 before the 消費 reframe
+  "xiaofei_needs_wants_v1",
+  "cunqian_savings_v1",
+  "xinyong_housing_v1", // retired — 信用線 before the credit-card simulation
+  "xinyong_credit_card_v1",
+  "touzi_investing_v1", // retired — 投資線 before the 定期定額 timing choice
+  "touzi_investing_v2",
+  "zhapian_fraud_v1",
+  "xuedai_student_loan_v1",
+  "baoshui_tax_v1", // retired — 報稅線 before the filing rework
+  "zuwu_lease_v1",
+  "baoxian_sales_pitch_v1",
+  "chuangye_bubble_tea_v1",
+  "capstone_buy_vs_rent_v1",
+  "baoshui_tax_filing_v1",
+  "touzi_twse_reflection_v1",
+  "touzi_investing_v3",
+  "baoxian_sales_pitch_v2",
+  "zhapian_fraud_v2",
+  "xuedai_student_loan_v2",
+  "cunqian_savings_v2",
+  "chuangye_bubble_tea_v2",
+  "capstone_buy_vs_rent_v2",
+  "xinyong_credit_card_v2",
+  // Terminal task sets of the redesign (lib/tasks/terminal.ts): one shared
+  // outcome shape, the task engine's stored result.
+  ...TERMINAL_TASK_KINDS,
+] as const;
+
+export type SimKind = (typeof SIM_KINDS)[number];
+
+/** Kinds that are no longer produced but still exist in stored history. */
+export const RETIRED_SIM_KINDS: readonly SimKind[] = [
+  "xinyong_housing_v1",
+  "qixin_salary_v1",
+  "baoshui_tax_v1",
+  "touzi_investing_v1",
+  "touzi_investing_v2",
+  "baoxian_sales_pitch_v1",
+  "zhapian_fraud_v1",
+  "xuedai_student_loan_v1",
+  "cunqian_savings_v1",
+  "chuangye_bubble_tea_v1",
+  "capstone_buy_vs_rent_v1",
+  "xinyong_credit_card_v1",
+];
+
+// --- per-kind outcome schemas ----------------------------------------------
+// Required fields are the ones a consumer actually reads. Adding a field here
+// is a promise that it will keep existing; removing one is a breaking change
+// that should mint a new kind.
+
+const zhiyaCareerOutcome = z.object({
+  interest: z.enum(INTEREST_IDS),
+  pathId: z.string(),
+  pathName: z.string(),
+  // What 消費 spends. Declared here because a consumer depends on it, which
+  // is the whole rule for what belongs in one of these schemas.
+  startingIncome: z.number(),
+  fiveYearTotal: z.number(),
+  monthsWithoutIncome: z.number(),
+});
+
+const qixinOutcome = z
+  .object({
+    leftover: z.number(),
+    deficit: z.boolean(),
+    annualSavings: z.number(),
+  });
+
+const xiaofeiOutcome = z.object({
+  income: z.number(),
+  incomeFromCareer: z.boolean(),
+  needsTotal: z.number(),
+  wantsTotal: z.number(),
+  savings: z.number(),
+  underfunded: z.array(z.string()),
+  absorbedShortfall: z.boolean(),
+  shortfallGap: z.number(),
+  verdict: z.enum(["comfortable", "tight", "short"]),
+});
+
+const cunqianOutcome = z
+  .object({
+    goal: z.object({ label: z.string(), amount: z.number() }),
+    user: z
+      .object({ finalAmount: z.number(), reachedGoal: z.boolean() })
+      ,
+    resistAll: z.object({ finalAmount: z.number() }),
+    giveInAll: z.object({ finalAmount: z.number() }),
+  });
+
+// v2 adds the 10-year projection; interest is now only earned on a positive
+// balance, so it is never floored.
+const cunqianV2Outcome = cunqianOutcome.extend({
+  monthlyDeposit: z.number(),
+  storage: z.object({ label: z.string(), annualRate: z.number() }),
+  tenYear: z.object({
+    years: z.number(),
+    finalAmount: z.number(),
+    deposited: z.number(),
+    interest: z.number(),
+  }),
+});
+
+const xinyongHousingOutcome = z
+  .object({
+    chosen: z.object({ leftover: z.number() }),
+  });
+
+const xinyongCreditCardOutcome = z
+  .object({
+    totalPaid: z.number(),
+    totalInterest: z.number(),
+    totalIfNoInterest: z.number(),
+    creditRecord: z.enum(["良好", "普通"]),
+    // Optional, not required, and deliberately so: rows written before the
+    // stable value existed are still perfectly readable, and making this
+    // required would turn every one of them into UNREADABLE_RESULT_TEXT for
+    // the coach, the stamp and the certificate. Read it through
+    // creditRecordOf(), which falls back to mapping the label for those rows.
+    record: z.enum(CREDIT_RECORD_VALUES).optional(),
+    rounds: z.array(z.object({ carryOut: z.number() })),
+  });
+
+// v2 adds the third choice, 沒繳 (missed), its 違約金, and the 'poor' record it
+// produces. `record` is required from here on.
+const xinyongCreditCardV2Outcome = z.object({
+  totalPaid: z.number(),
+  totalInterest: z.number(),
+  totalIfNoInterest: z.number(),
+  creditRecord: z.enum(["良好", "普通", "不佳"]),
+  record: z.enum(CREDIT_RECORD_VALUES),
+  rounds: z.array(z.object({ carryOut: z.number(), lateFee: z.number() })),
+  totalLateFees: z.number(),
+  missedCount: z.number(),
+});
+
+const touziOutcome = z
+  .object({
+    start: z.number(),
+    // Optional: rows written before provenance was stored are still valid,
+    // and readers treat "absent" as "unknown", never as "real".
+    startFromSavingsLine: z.boolean().optional(),
+    chosen: z
+      .object({
+        id: z.string(),
+        label: z.string(),
+        low: z.number(),
+        high: z.number(),
+        taxOnMidSale: z.number(),
+        taxRate: z.number().optional(),
+      })
+      ,
+  });
+
+// v2 adds the timing decision and the real-price comparison. The v1 schema
+// above is untouched so its rows keep reading exactly as they were awarded.
+const touziV2Outcome = z.object({
+  start: z.number(),
+  startFromSavingsLine: z.boolean(),
+  timing: z.enum(["lump", "dca"]),
+  chosen: z.object({
+    id: z.string(),
+    label: z.string(),
+    low: z.number(),
+    high: z.number(),
+    taxOnMidSale: z.number(),
+    taxRate: z.number(),
+  }),
+  historical: z
+    .object({
+      ticker: z.string(),
+      from: z.string(),
+      to: z.string(),
+      lump: z.object({ finalValue: z.number(), invested: z.number() }),
+      dca: z.object({ finalValue: z.number(), invested: z.number() }),
+      betterInHindsight: z.enum(["lump", "dca", "same"]),
+    })
+    .nullable(),
+});
+
+// v3 charges 手續費 on the buy and the sale and drops the 抽籤 choice.
+const touziV3Outcome = touziV2Outcome.extend({
+  chosen: touziV2Outcome.shape.chosen.extend({
+    buyFee: z.number(),
+    sellFeeOnMid: z.number(),
+    totalCostOnMid: z.number(),
+  }),
+});
+
+const zhapianOutcome = z
+  .object({ correct: z.number(), total: z.number() });
+
+// v2: 22 cards (假檢警, a caller who knows your order) and a consequence for
+// each scam card. Same read surface; a new kind because `total` and the card
+// set changed, so v1 scores stay readable as scores on the 20-card set.
+const zhapianV2Outcome = zhapianOutcome.extend({ timedOut: z.number() });
+
+const xuedaiOutcome = z.object({ loanCoversPct: z.number() });
+
+// v2: in school → 2-year grace → repayment at the verified 0.775%.
+const xuedaiV2Outcome = xuedaiOutcome.extend({
+  loanAmount: z.number(),
+  monthlyRepayment: z.number(),
+  totalInterest: z.number(),
+  annualRate: z.number(),
+  graceYears: z.number(),
+  repaymentYears: z.number(),
+  repaymentAsPctOfSalary: z.number(),
+  salaryFromCareer: z.boolean(),
+  phases: z.array(
+    z.object({
+      id: z.enum(["school", "grace", "repay"]),
+      label: z.string(),
+      years: z.number(),
+      monthly: z.number(),
+      total: z.number(),
+    }),
+  ),
+});
+
+// `character` is the whole chosen character object, not its id — the stamp
+// previously read the id off spending_choices instead, which is why this
+// mismatch only surfaced once the two were validated against each other.
+const baoshuiOutcome = z.object({
+  character: z.object({ id: z.string() }),
+});
+
+const zuwuOutcome = z
+  .object({
+    correctFlags: z.number(),
+    totalBad: z.number(),
+    falseFlags: z.array(z.unknown()),
+  });
+
+const baoxianOutcome = z
+  .object({ allDeclined: z.boolean(), boughtSavings: z.boolean() });
+
+// v2 adds the example policy's numbers and evaluates the 儲蓄險 decision.
+const baoxianV2Outcome = baoxianOutcome.extend({
+  askedForTable: z.boolean(),
+  savingsVerdict: z.enum(["declined", "bought_after_checking", "bought_without_checking"]),
+  irrAt6: z.number(),
+  irrAt10: z.number(),
+  depositRate: z.number(),
+  surrenderAt6: z.number(),
+  paidBy6: z.number(),
+});
+
+const chuangyeOutcome = z
+  .object({ survived: z.boolean(), priceId: z.string() });
+
+// v2: 毛利率, stock-outs and the day-12 price decision.
+const chuangyeV2Outcome = chuangyeOutcome.extend({
+  bankruptDay: z.number().nullable(),
+  finalCash: z.number(),
+  totalProfit: z.number(),
+  breakEvenCups: z.number(),
+  grossMarginPct: z.number(),
+  raisedPrice: z.boolean(),
+  lostCupsTotal: z.number(),
+  lostRevenue: z.number(),
+});
+
+// 投資線 in linkout mode. Declared and contract-checked while the mode is
+// switched off, so activating it is a flag rather than a build — a kind added
+// at flip time would be the one piece nobody had validated.
+const touziReflectionOutcome = z.object({
+  suggestedAmount: z.number(),
+  fromSavingsLine: z.boolean(),
+  inShortfall: z.boolean(),
+  plannedAmount: z.number(),
+  overCommitment: z.number(),
+  beyondPosition: z.boolean(),
+  focus: z.enum(["etf", "single", "browsing"]),
+  surprise: z.enum(["volatility", "fees", "slow", "amount", "nothing"]),
+  intent: z.enum(["yes", "later", "no"]),
+  hasInvested: z.boolean(),
+  investedAmount: z.number(),
+});
+
+// The filing rework grades three steps rather than recording which character
+// was picked. `character.id` stays declared so the two kinds can be read
+// side by side, but the fields that matter now are the ones a student can
+// get right or wrong.
+const baoshuiFilingOutcome = z.object({
+  character: z.object({ id: z.string(), name: z.string() }),
+  payslipCorrect: z.boolean(),
+  deductionsCorrect: z.boolean(),
+  methodCorrect: z.boolean(),
+  method: z.enum(["gross", "bracket", "flat_top"]),
+  netIncome: z.number(),
+  taxOwed: z.number(),
+  studentTax: z.number(),
+  taxGap: z.number(),
+  withheld: z.number(),
+  balance: z.number(),
+  isRefund: z.boolean(),
+  stepsCorrect: z.number(),
+});
+
+// The capstone reads five lines' worth of state, so its outcome echoes the
+// inputs it was given. A result that cannot explain itself without also
+// fetching today's profile would be unreadable the moment the student runs
+// another line and the profile moves on.
+const capstoneBuyVsRentOutcome = z.object({
+  choice: z.enum(["buy", "rent"]),
+  // Provenance. Optional so pre-existing rows still parse; a reader that
+  // finds them absent must say "unknown", not assume the figures were real.
+  incomeKnown: z.boolean().optional(),
+  savingsKnown: z.boolean().optional(),
+  creditKnown: z.boolean().optional(),
+  investedKnown: z.boolean().optional(),
+  income: z.number(),
+  savings: z.number(),
+  creditRecord: z.enum(CREDIT_RECORD_VALUES),
+  hasInvested: z.boolean(),
+  investedAmount: z.number(),
+  downPaymentRequired: z.number(),
+  downPaymentShortfall: z.number(),
+  canCoverDownPayment: z.boolean(),
+  annualRate: z.number(),
+  monthlyMortgage: z.number(),
+  mortgageShareOfIncome: z.number(),
+  approvalLikely: z.boolean(),
+  monthlyRent: z.number(),
+  verdict: z.enum(["comfortable", "stretched", "not_viable"]),
+});
+
+// v2 uses 消費線's monthly saving: years until the deposit is in reach.
+const capstoneBuyVsRentV2Outcome = capstoneBuyVsRentOutcome.extend({
+  savingsBehavior: z.object({
+    direction: z.enum(["surplus", "shortfall"]),
+    amount: z.number(),
+    known: z.boolean(),
+  }),
+  yearsToDownPayment: z.number().nullable(),
+});
+
+/**
+ * A terminal task set's stored result (03 §4): the server scored the
+ * answers; this is what it kept. Shared by every terminal task kind.
+ */
+const taskOutcome = z.object({
+  taskSetId: z.string(),
+  score: z.number(),
+  total: z.number(),
+  steps: z.array(z.object({ stepId: z.string(), correct: z.number(), answer: z.unknown() })),
+  hookAnswer: z.string().nullable(),
+  revealShown: z.string(),
+  provenance: z.record(z.string(), z.boolean()),
+  attempt: z.number(),
+});
+
+// --- the union --------------------------------------------------------------
+
+export const SimResultSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("zhiya_career_choice_v1"), outcome: zhiyaCareerOutcome }),
+  z.object({ kind: z.literal("qixin_salary_v1"), outcome: qixinOutcome }),
+  z.object({ kind: z.literal("xiaofei_needs_wants_v1"), outcome: xiaofeiOutcome }),
+  z.object({ kind: z.literal("cunqian_savings_v1"), outcome: cunqianOutcome }),
+  z.object({ kind: z.literal("xinyong_housing_v1"), outcome: xinyongHousingOutcome }),
+  z.object({ kind: z.literal("xinyong_credit_card_v1"), outcome: xinyongCreditCardOutcome }),
+  z.object({ kind: z.literal("touzi_investing_v1"), outcome: touziOutcome }),
+  z.object({ kind: z.literal("touzi_investing_v2"), outcome: touziV2Outcome }),
+  z.object({ kind: z.literal("zhapian_fraud_v1"), outcome: zhapianOutcome }),
+  z.object({ kind: z.literal("xuedai_student_loan_v1"), outcome: xuedaiOutcome }),
+  z.object({ kind: z.literal("baoshui_tax_v1"), outcome: baoshuiOutcome }),
+  z.object({ kind: z.literal("zuwu_lease_v1"), outcome: zuwuOutcome }),
+  z.object({ kind: z.literal("baoxian_sales_pitch_v1"), outcome: baoxianOutcome }),
+  z.object({ kind: z.literal("chuangye_bubble_tea_v1"), outcome: chuangyeOutcome }),
+  z.object({
+    kind: z.literal("capstone_buy_vs_rent_v1"),
+    outcome: capstoneBuyVsRentOutcome,
+  }),
+  z.object({
+    kind: z.literal("baoshui_tax_filing_v1"),
+    outcome: baoshuiFilingOutcome,
+  }),
+  z.object({
+    kind: z.literal("touzi_twse_reflection_v1"),
+    outcome: touziReflectionOutcome,
+  }),
+  z.object({ kind: z.literal("touzi_investing_v3"), outcome: touziV3Outcome }),
+  z.object({ kind: z.literal("baoxian_sales_pitch_v2"), outcome: baoxianV2Outcome }),
+  z.object({ kind: z.literal("zhapian_fraud_v2"), outcome: zhapianV2Outcome }),
+  z.object({ kind: z.literal("xuedai_student_loan_v2"), outcome: xuedaiV2Outcome }),
+  z.object({ kind: z.literal("cunqian_savings_v2"), outcome: cunqianV2Outcome }),
+  z.object({ kind: z.literal("chuangye_bubble_tea_v2"), outcome: chuangyeV2Outcome }),
+  z.object({ kind: z.literal("capstone_buy_vs_rent_v2"), outcome: capstoneBuyVsRentV2Outcome }),
+  z.object({ kind: z.literal("xinyong_credit_card_v2"), outcome: xinyongCreditCardV2Outcome }),
+  z.object({ kind: z.literal("xinyong_protect_card_v1"), outcome: taskOutcome }),
+  z.object({ kind: z.literal("qixin_need_want_v1"), outcome: taskOutcome }),
+  z.object({ kind: z.literal("cunqian_savings_rate_v1"), outcome: taskOutcome }),
+  z.object({ kind: z.literal("touzi_crash_v1"), outcome: taskOutcome }),
+  z.object({ kind: z.literal("baoxian_fourrisks_v1"), outcome: taskOutcome }),
+  z.object({ kind: z.literal("zhapian_case1_v1"), outcome: taskOutcome }),
+  z.object({ kind: z.literal("zhapian_case2_v1"), outcome: taskOutcome }),
+  z.object({ kind: z.literal("zhapian_case3_v1"), outcome: taskOutcome }),
+  z.object({ kind: z.literal("zhapian_case4_v1"), outcome: taskOutcome }),
+  z.object({ kind: z.literal("zhapian_case5_v1"), outcome: taskOutcome }),
+  z.object({ kind: z.literal("zhapian_case6_v1"), outcome: taskOutcome }),
+  z.object({ kind: z.literal("touzi_etfcode_v1"), outcome: taskOutcome }),
+]);
+
+/**
+ * A validated result. Consumers switch on `kind`; TypeScript then narrows
+ * `outcome` to that kind's shape, so reading a field belonging to a different
+ * simulation fails to compile.
+ */
+export type SimResult = z.infer<typeof SimResultSchema>;
+
+export function isSimKind(v: unknown): v is SimKind {
+  return typeof v === "string" && (SIM_KINDS as readonly string[]).includes(v);
+}
+
+/**
+ * Validate a result at the API boundary, before anything is stored. Returns
+ * the typed result, or an error describing what failed — never a partially
+ * trusted object.
+ */
+export function parseSimResult(
+  input: unknown,
+): { ok: true; result: SimResult } | { ok: false; error: string } {
+  const parsed = SimResultSchema.safeParse(input);
+  if (parsed.success) return { ok: true, result: parsed.data };
+  const issue = parsed.error.issues[0];
+  return {
+    ok: false,
+    error: issue
+      ? `${issue.path.join(".") || "(root)"}: ${issue.message}`
+      : "unrecognised simulation result shape",
+  };
+}
+
+/**
+ * Read a stored row back into the union. Rows written before `kind` existed,
+ * and rows whose kind this build does not know, come back as null so callers
+ * are forced to render a neutral state rather than guess at the shape.
+ */
+export function readStoredResult(
+  kind: unknown,
+  outcome: unknown,
+): SimResult | null {
+  if (!isSimKind(kind)) return null;
+  const parsed = SimResultSchema.safeParse({ kind, outcome });
+  return parsed.success ? parsed.data : null;
+}
+
+/** Shown wherever a result cannot be read. Never accompanied by a figure. */
+export const UNREADABLE_RESULT_TEXT = "此模擬結果無法顯示";
+
+/**
+ * The stable credit value for a credit-card result, old rows included.
+ *
+ * The one place allowed to look at the display label, and only when the
+ * stored row predates `record`. Everything downstream calls this instead of
+ * reading either field, so rewording 信用線 cannot reach the capstone.
+ */
+export function creditRecordOf(outcome: {
+  creditRecord: string;
+  record?: CreditRecordValue;
+}): CreditRecordValue {
+  return outcome.record ?? legacyRecordValue(outcome.creditRecord);
+}

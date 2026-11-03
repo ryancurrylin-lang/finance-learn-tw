@@ -1,0 +1,131 @@
+/* Game home (01 §6.1): three columns ≥1100px, two 720-1099px, one below. */
+.game-shell .gh-tabs { display: flex; flex-direction: column; flex: 1; }
+.game-shell .gh-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 330px) minmax(0, 1fr) minmax(0, 370px);
+  grid-template-areas: "left center right";
+  gap: var(--column-gap, 24px);
+  align-items: start;
+  flex: 1;
+}
+.game-shell .gh-left { grid-area: left; display: flex; flex-direction: column; gap: var(--card-gap, 14px); }
+.game-shell .gh-right { grid-area: right; display: flex; flex-direction: column; gap: var(--card-gap, 14px); }
+.game-shell .gh-center {
+  grid-area: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+.game-shell .gh-character {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.game-shell .gh-avatar-lg { display: block; }
+.game-shell .gh-avatar-sm { display: none; }
+.game-shell .gh-stop-card { width: 100%; max-width: 640px; align-self: center; }
+.game-shell .gh-stop {
+  width: 100%;
+  max-width: 640px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.game-shell .gh-stop-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 260px; }
+.game-shell .gh-stop-label { font-size: 12px; font-weight: 700; letter-spacing: 0.08em; }
+.game-shell .gh-stop-question { font-size: var(--text-question, 20px); font-weight: 700; line-height: 1.4; margin: 0; }
+.game-shell .gh-stop-do { font-size: 13px; color: var(--ink-muted); }
+.game-shell .gh-money-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.game-shell .gh-divider { border-top: 1px solid var(--track); padding-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.game-shell .gh-foot { display: flex; justify-content: space-between; font-size: 13px; color: var(--ink-muted); gap: 8px; flex-wrap: wrap; }
+.game-shell .gh-detail-head { display: flex; align-items: center; gap: 8px; }
+.game-shell .gh-dot { width: 12px; height: 12px; border-radius: 999px; flex: none; }
+.game-shell .gh-detail-name { font-size: 17px; font-weight: 700; }
+.game-shell .gh-detail-status { margin-left: auto; font-size: 12px; color: var(--ink-muted); }
+.game-shell .gh-muted { font-size: 13px; color: var(--ink-muted); margin: 0; }
+.game-shell .gh-links { display: flex; flex-wrap: wrap; gap: 8px; }
+.game-shell .gh-links a {
+  display: inline-flex; align-items: center; min-height: 44px; padding: 0 14px;
+  border-radius: var(--radius-pill); background: var(--card-strong); color: var(--ink);
+  font-size: 14px; font-weight: 500; text-decoration: none; box-shadow: var(--shadow-pill);
+}
+@media (max-width: 1099px) {
+  .game-shell .gh-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas: "center center" "left right";
+  }
+}
+@media (max-width: 719px) {
+  .game-shell .gh-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "center" "left" "right";
+  }
+  .game-shell .gh-avatar-lg { display: none; }
+  .game-shell .gh-avatar-sm { display: block; }
+
+  /* One pane per screen (05 Part C); the tab bar sits at the bottom. */
+  .game-shell .gh-tabs { padding-bottom: 72px; }
+  .game-shell .gh-tabs:not([data-tab="today"]) .gh-center,
+  .game-shell .gh-tabs:not([data-tab="map"]) .gh-right,
+  .game-shell .gh-tabs:not([data-tab="status"]) .gh-pane-status,
+  .game-shell .gh-tabs:not([data-tab="moves"]) .gh-pane-moves { display: none; }
+  .game-shell .gh-tabs[data-tab="today"] .gh-left,
+  .game-shell .gh-tabs[data-tab="map"] .gh-left { display: none; }
+  /* The map scrolls inside its pane, like a document viewer. */
+  .game-shell .gh-tabs[data-tab="map"] .gh-right {
+    max-height: calc(100dvh - var(--shell-chrome, 96px) - 140px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .game-shell .gh-tabs[data-tab="today"] .gh-center { gap: 12px; }
+}
+.game-shell .gh-tabbar { display: none; }
+@media (max-width: 719px) {
+  .game-shell .gh-tabbar {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: max(10px, env(safe-area-inset-bottom));
+    z-index: 20;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px;
+    padding: 6px;
+    border-radius: var(--radius-pill);
+    background: var(--card-strong);
+    box-shadow: var(--shadow-pill);
+  }
+  .game-shell .gh-tab {
+    min-height: 44px;
+    border: 0;
+    border-radius: var(--radius-pill);
+    background: transparent;
+    color: var(--ink-muted);
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .game-shell .gh-tab[aria-current="page"] {
+    background: var(--ink);
+    color: var(--ink-inverse);
+  }
+}
+
+.game-shell .gh-fund summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink-muted);
+}
+.game-shell .gh-fund p {
+  margin: 0;
+}

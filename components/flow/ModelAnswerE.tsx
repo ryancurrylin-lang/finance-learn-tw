@@ -1,0 +1,245 @@
+"use client";
+
+/**
+ * One model-answer screen (06 E8.5, with F3.2's wording). Compare language,
+ * never "wrong": 你的答案 and 建議答案; a match is one card 「和建議答案一樣」
+ * with a check; a difference is 「和建議答案不同」 on a neutral ground. Only
+ * arithmetic (a number step) says 正確答案 and uses the bad tint, with words.
+ * Every screen ends with 「這是一種做法，不是唯一的答案。」.
+ *
+ * Find, sort and order keep the older answer body inside this frame for now.
+ */
+import type { ReactNode } from "react";
+import { renderMaterial } from "@/components/documents";
+import { Label } from "@/components/ui/Bits";
+import { Icon } from "@/components/ui/icons";
+import ui from "@/components/ui/ui.module.css";
+import { formatUnitValue } from "@/components/tasks/answers";
+import { ModelAnswer } from "@/components/tasks/ModelAnswer";
+import { WriteAnswer } from "@/components/tasks/WriteAnswer";
+import type { Goal } from "@/lib/tasks/compute";
+import { overlap } from "@/lib/tasks/overlap";
+import { resolveNumber } from "@/lib/tasks/compute";
+import type { StepScore } from "@/lib/tasks/scoring";
+import type { Material, RateStep, TaskStep } from "@/lib/tasks/types";
+import s from "./answer.module.css";
+
+const NO_ANSWER = "（沒有作答）";
+const rec = (v: unknown): Record<string, unknown> => (v && typeof v === "object" ? (v as Record<string, unknown>) : {});
+
+function Yours({ children, tone = "neutral" }: { children: ReactNode; tone?: "neutral" | "bad" }) {
+  return (
+    <div className={`${s.box} ${tone === "bad" ? s.bad : s.neutral}`}>
+      <p className={s.boxLabel}>
+        {tone === "bad" ? <Icon name="close" size={16} /> : <span className={s.ring} aria-hidden="true" />}
+        你的答案
+      </p>
+      <div className={s.boxBody}>{children}</div>
+    </div>
+  );
+}
+/** 06 G9 item 9: number steps are facts unless the content says otherwise. */
+export const isFactStep = (step: TaskStep): boolean =>
+  step.answerKind ? step.answerKind === "fact" : step.type === "number" || (step.type === "choice" && step.correctNearest !== undefined);
+
+/**
+ * 10 CMP-2: 「這是一種做法，不是唯一的答案。」 only on a judgment step. A step
+ * is a fact unless the content marks it `answerKind: "judgment"`; a rating
+ * (你是銀行) is a judgment unless marked otherwise.
+ */
+export const isJudgmentStep = (step: TaskStep): boolean => (step.answerKind ? step.answerKind === "judgment" : step.type === "rate");
+
+function Model({ children, label = "建議答案" }: { children: ReactNode; label?: string }) {
+  return (
+    <div className={`${s.box} ${s.good}`}>
+      <p className={s.boxLabel}>
+        <Icon name="check" size={16} />
+        {label}
+      </p>
+      <div className={s.boxBody}>{children}</div>
+    </div>
+  );
+}
+function Same({ children, label = "和建議答案一樣" }: { children: ReactNode; label?: string }) {
+  return (
+    <div className={`${s.box} ${s.good}`}>
+      <p className={s.boxLabel}>
+        <Icon name="check" size={16} />
+        {label}
+      </p>
+      <div className={s.boxBody}>{children}</div>
+    </div>
+  );
+}
+function Differs() {
+  return <p className={s.differs}>和建議答案不同</p>;
+}
+
+export function ModelAnswerE({
+  step,
+  index,
+  answer,
+  detail,
+  materials,
+  goal,
+  rateItem,
+  verifiedOn,
+  oneWayLine = true,
+  bare = false,
+  explainOverride,
+}: {
+  step: TaskStep;
+  index: number;
+  answer: unknown;
+  detail?: StepScore;
+  materials: Material[];
+  goal: Goal | null;
+  rateItem?: RateStep["items"][number];
+  verifiedOn?: string;
+  /** The compare screen says 「這是一種做法」 once under its block (06 G2), not per item. */
+  oneWayLine?: boolean;
+  /** The workspace card already shows the number and the question. */
+  bare?: boolean;
+  /** 10 CMP-1: the step's explanation as the caller decided (null: already shown). */
+  explainOverride?: string | null;
+}) {
+  const full = (detail?.credit ?? 0) >= 1 - 1e-9;
+  const scored = step.scored !== false && !detail?.unresolved;
+  let compare: ReactNode = null;
+  // The older body (find, sort, order) carries its own heading and prompt.
+  const ownHeading = step.type === "find" || step.type === "sort" || step.type === "order";
+  const explanation = explainOverride !== undefined ? explainOverride : step.explanation;
+  let why: ReactNode = explanation ? <p className={ui.body}>{explanation}</p> : null;
+
+  if (step.type === "choice") {
+    const a = rec(answer);
+    const picked = step.options.find((o) => o.id === a.option);
+    const reason = step.reasons?.find((r) => r.id === a.reason);
+    const correct = step.options.find((o) => o.id === step.correct);
+    const correctReason = step.reasons?.find((r) => r.id === step.correctReason);
+    // 06 G9 item 8: the suggested reason is said once, under 為什麼, not
+    // also as 「理由：」 in the model box. The student's own reason stays.
+    const show = (o?: { label: string }, r?: { label: string }, withReason = true) => (
+      <>
+        <p className={s.answer}>{o?.label ?? NO_ANSWER}</p>
+        {withReason && (step.reasons?.length ?? 0) >= 2 ? <p className={s.reason}>理由：{r?.label ?? NO_ANSWER}</p> : null}
+      </>
+    );
+    const fact = isFactStep(step);
+    if (!scored) compare = <Yours>{show(picked, reason)}</Yours>;
+    else if (full) compare = <Same label={fact ? "和正確答案一樣" : undefined}>{show(picked, reason)}</Same>;
+    else
+      compare = (
+        <>
+          <Differs />
+          <Yours>{show(picked, reason)}</Yours>
+          <Model label={fact ? "正確答案" : undefined}>{show(correct, correctReason, false)}</Model>
+        </>
+      );
+    // Said once: not again when the student's own box already shows it.
+    const reasonOnce =
+      scored && correctReason && reason?.id !== correctReason.id && !(explanation ?? "").includes(correctReason.label) ? <p className={ui.body}>{correctReason.label}</p> : null;
+    // The explanation that only repeats the reason in the student's box goes.
+    const sameAsReason = !!explanation && !!reason && overlap(explanation, reason.label) > 0.8;
+    why = (
+      <>
+        {sameAsReason ? null : why}
+        {reasonOnce}
+        {scored && picked && picked.id !== step.correct && picked.explain ? (
+          <p className={ui.body}>
+            「{picked.label}」：{picked.explain}
+          </p>
+        ) : null}
+        {scored && correct?.explain ? (
+          <p className={ui.body}>
+            「{correct.label}」：{correct.explain}
+          </p>
+        ) : null}
+      </>
+    );
+  } else if (step.type === "rate" && rateItem) {
+    const given = rec(rec(answer).ratings)[rateItem.id];
+    const label = (v: unknown) => {
+      const sc = step.scale.find((x) => x.value === v);
+      return sc ? `${sc.value}，${sc.label}` : NO_ANSWER;
+    };
+    const credit = detail?.perItem?.find((p) => p.id === rateItem.id)?.credit ?? 0;
+    const also = rateItem.alsoFull?.filter((v) => v !== rateItem.answer) ?? [];
+    compare =
+      credit >= 1 - 1e-9 ? (
+        <Same>
+          <p className={s.answer}>{label(given)}</p>
+        </Same>
+      ) : (
+        <>
+          <Differs />
+          <Yours>
+            <p className={s.answer}>{label(given)}</p>
+          </Yours>
+          <Model>
+            <p className={s.answer}>{label(rateItem.answer)}</p>
+            {also.length ? <p className={s.reason}>給 {also.join("、")} 也可以</p> : null}
+          </Model>
+        </>
+      );
+    const material = materials[rateItem.materialIndex];
+    why = (
+      <>
+        <p className={ui.body}>{rateItem.explain}</p>
+        {material ? (
+          <details className={s.doc}>
+            <summary>點開資料，看關鍵的欄位</summary>
+            {renderMaterial(material, { highlight: rateItem.highlight, headingLevel: 3 })}
+          </details>
+        ) : null}
+      </>
+    );
+  } else if (step.type === "number") {
+    const raw = typeof answer === "number" ? answer : Number(rec(answer).value ?? answer);
+    const right = resolveNumber(step.answer, { goal });
+    const fmt = (n: number | null) => (n === null || !Number.isFinite(n) ? NO_ANSWER : formatUnitValue(n, step.unit));
+    compare = full ? (
+      <Same label="和正確答案一樣">
+        <p className={s.answer}>{fmt(raw)}</p>
+      </Same>
+    ) : (
+      <>
+        <Yours tone="bad">
+          <p className={s.answer}>{fmt(raw)}</p>
+        </Yours>
+        <Model label="正確答案">
+          <p className={s.answer}>{fmt(right)}</p>
+        </Model>
+      </>
+    );
+  } else if (step.type === "write") {
+    compare = <WriteAnswer step={step} answer={answer} />;
+    why = explanation ? <p className={ui.body}>{explanation}</p> : null;
+  } else {
+    // find, sort, order: the older body, still in compare language.
+    compare = (
+      <ModelAnswer step={step} index={index} answer={answer} detail={detail} materials={materials} goal={goal} arriveIndex={0} explanation={explanation} />
+    );
+    why = null;
+  }
+
+  return (
+    <div className={s.wrap}>
+      {ownHeading || (bare && !rateItem) ? null : (
+        <>
+          <Label>第 {index + 1} 題</Label>
+          <p className={s.prompt}>{rateItem ? rateItem.label : step.prompt}</p>
+        </>
+      )}
+      {compare}
+      {why ? (
+        <>
+          <Label>為什麼</Label>
+          {why}
+        </>
+      ) : null}
+      {oneWayLine && isJudgmentStep(step) && step.type !== "write" ? <p className={ui.fine}>這是一種做法，不是唯一的答案。</p> : null}
+      {verifiedOn ? <p className={ui.fine}>資料查證：{verifiedOn}</p> : null}
+    </div>
+  );
+}

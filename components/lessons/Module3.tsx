@@ -1,0 +1,169 @@
+import { lineAccentForModule } from "@/lib/lines";
+import {
+  Section,
+  P,
+  Term,
+  Bullets,
+  Callout,
+  InfoBoard,
+  MistakeNote,
+  Compare,
+  Worked,
+  Scenario,
+} from "@/components/lesson";
+import { MicroCheck } from "@/components/MicroCheck";
+import { CPI_ANNUAL, TIME_DEPOSIT_1Y, pct } from "@/lib/rates";
+
+const C = lineAccentForModule(3).color;
+
+export default function Module3() {
+  return (
+    <>
+      <Section title="複利：讓錢自己去賺錢">
+        <P>
+          存錢最讓人有感的一件事，叫做<Term>複利（compound interest）</Term>
+          ：你賺到的利息，之後也會跟著本金一起再賺利息。這就是俗稱的「
+          <Term>利滾利</Term>」。它一開始看起來很不起眼，但時間拉長，威力會大到讓人吃驚。
+        </P>
+        <P>
+          存錢也不只是「省吃儉用」——它其實是在幫未來的自己買<Term>選擇權</Term>
+          。沒有存款的人，遇到手機摔壞、朋友婚禮、突然想轉學考，只能刷卡或跟家人借；有存款的人，這些都只是「決定要不要花」的問題，而不是「有沒有錢可以花」的問題。
+        </P>
+      </Section>
+
+      <InfoBoard>
+        <p>
+          台灣家庭平均儲蓄率長期偏高，但年輕族群（20-29 歲）的儲蓄率明顯低於整體平均，主因是起薪成長跟不上生活成本——來源：主計總處家庭收支調查。
+        </p>
+      </InfoBoard>
+
+      <Section title="利滾利，到底怎麼滾？">
+        <P>
+          假設你把 <span className="money">NT$10,000</span>{" "}
+          放著，年利率 2%（先當作範例）。先看最單純的算法：<Term>單利</Term>
+          ，每年都只拿最初的本金算利息，一年 200 元，三年後是 NT$10,600。再看<Term>複利</Term>
+          ，每一年「賺到的利息」是怎麼一年比一年多的：
+        </P>
+        <Worked
+          title="NT$10,000 · 年利率 2%"
+          accent={C}
+          rows={[
+            { label: "一開始", value: "NT$10,000" },
+            { label: "第 1 年底（利息 200）", value: "NT$10,200" },
+            { label: "第 2 年底（利息 204）", value: "NT$10,404" },
+            { label: "第 3 年底（利息 208）", value: "NT$10,612" },
+          ]}
+          note="注意每年的利息：200 → 204 → 208，一年比一年多。因為第二年是用 10,200 去算利息，不是 10,000。這就是利滾利，三年下來比單利多了 12 元。"
+        />
+        <P>
+          寫成公式只有一行：<Term>本利和 ＝ 本金 ×（1 ＋ 年利率）^ 年數</Term>
+          。例如 10,000 ×（1.02）³ ≈ 10,612。年數放在次方，所以時間越長，差距放大得越快。
+        </P>
+        <P>
+          時間再拉長，差距會更明顯。同樣是這筆錢、同樣 2%：
+        </P>
+        <Worked
+          title="時間的力量（同樣 NT$10,000 · 2%）"
+          accent={C}
+          rows={[
+            { label: "放 5 年", value: "≈ NT$11,041" },
+            { label: "放 10 年", value: "≈ NT$12,190" },
+            { label: "放 30 年", value: "≈ NT$18,114", strong: true },
+          ]}
+          note="本金一樣、利率一樣，差別只有「放多久」。30 年幾乎翻了快一倍。"
+        />
+      </Section>
+
+      <Section title="所以真正的祕訣是：越早開始">
+        <P>
+          複利最關鍵的原料是<Term>時間</Term>，而時間是你買不到的。這也是為什麼「越早開始存」通常結果差最多——不是因為早存的人本金比較大，也不是他們拿到特別高的利率，而是他們的錢有更長的時間去滾。
+        </P>
+        <Callout label="重點" color={C}>
+          <p>
+            18 歲開始存一點點，往往勝過 30 歲才開始存很多。時間會幫早開始的人補上差距。
+          </p>
+        </Callout>
+        <MistakeNote>
+          <p>
+            覺得複利效果要等到「有很多本金」才明顯。複利的關鍵是<Term>時間</Term>
+            ，不是起始金額，越早開始差距越大——這也是為什麼上面的表格特別把「放 30 年」單獨列出來。
+          </p>
+        </MistakeNote>
+      </Section>
+
+      <MicroCheck
+        color={C}
+        question="每月投入同樣金額，20 歲開始跟 30 歲開始，最大的差別來自什麼？"
+        options={["投入的總金額", "銀行給的優惠", "時間帶來的複利效果", "沒有差別"]}
+        correctIndex={2}
+        explain="複利的關鍵是時間，不是本金多寡。"
+      />
+
+      <Section title="台灣人最熟悉的地方：郵局與銀行定存">
+        <P>
+          在台灣，很多家庭把錢放在<Term>郵局</Term>或銀行的{" "}
+          <Term>定存</Term>。它的優點是安全、幾乎不會虧，缺點是利率偏低：{TIME_DEPOSIT_1Y.bank}
+          一年期定存的牌告固定利率是 {pct(TIME_DEPOSIT_1Y.rate, 3)}（{TIME_DEPOSIT_1Y.asOfLabel}）。
+        </P>
+        <P>
+          如果你是每個月存一點（例如從零用錢挪一份），銀行有一種定期儲蓄存款叫<Term>零存整付</Term>
+          ：每月存入固定金額，到期一次領回本金和利息。它就是存款版的「定期定額」，投資線的策略站會再遇到這個想法。
+        </P>
+        <P>
+          還有一件事會悄悄吃掉利息：<Term>通貨膨脹</Term>
+          。物價每年上漲，同樣的錢能買的東西就變少。行政院主計總處統計，消費者物價指數 2024 年上漲{" "}
+          {pct(CPI_ANNUAL[0].change)}、2025 年上漲 {pct(CPI_ANNUAL[1].change)}
+          。把利率減掉物價漲幅，才是你真正多出來的購買力，叫做<Term>實質報酬</Term>
+          。如果某一年物價漲得比利率快，存款數字雖然變大，能買的東西反而變少。
+        </P>
+        <P>
+          這代表：定存很適合放「短期內會用到、不能虧」的錢；但如果想讓錢長得更快，多數人後來會再學投資（這是投資線的主題）。無論如何，複利的道理都一樣——越早開始，時間越站在你這邊。
+        </P>
+      </Section>
+
+      <Section title="一個從你上工那天就開始的複利：勞退">
+        <P>
+          這裡有個好消息：在台灣，複利其實不用等你「想到」才開始。等你踏入職場、領到第一份薪水，
+          <Term>勞工退休金（勞退）</Term>{" "}
+          就自動啟動了。
+        </P>
+        <P>
+          依法，你的雇主每個月至少要提繳你月薪的{" "}
+          <Term>6%</Term>{" "}
+          到你的個人退休金專戶。以月薪{" "}
+          <span className="money">NT$36,000</span>{" "}
+          為例，那就是每月{" "}
+          <span className="money">NT$2,160</span>
+          ，而且是雇主額外提繳、不從你的薪水裡扣。這筆錢會在你的帳戶裡一路滾幾十年。
+        </P>
+        <Compare
+          accent={C}
+          us={
+            <>
+              美國的 401k 退休帳戶，通常要員工自己主動加入（opt in）
+              才會開始存，雇主的相對提撥（match）也因公司而異。
+            </>
+          }
+          tw={
+            <>
+              台灣勞退是雇主的法定義務、自動提繳 6%，不需要你申請或選擇。
+              換句話說，這是一份「不管你有沒有想到，都已經在替你複利」的存款。
+            </>
+          }
+        />
+      </Section>
+
+      <Scenario color={C}>
+        <p>
+          阿哲 18 歲開始，每年存下{" "}
+          <span className="money font-semibold">NT$12,000</span>
+          ；小美 28 歲才開始，每年存{" "}
+          <span className="money font-semibold">NT$12,000</span>。兩人利率一樣。
+        </p>
+        <p>
+          到 50 歲時，你覺得誰的錢會明顯比較多？為什麼？（提示：想想他們各自的錢，多滾了幾年。）
+        </p>
+      </Scenario>
+    </>
+  );
+}

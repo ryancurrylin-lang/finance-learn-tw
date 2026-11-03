@@ -1,0 +1,340 @@
+import { countTaskAttempts, insertTaskResult, bumpDailyActivity } from "@/lib/db";
+import { revealWithReadiness } from "@/lib/lifeGame/readinessReveal";
+import { taipeiDay } from "@/lib/streak";
+import type { TaskResult } from "@/lib/tasks/types";
+import { capstoneSnapshot } from "@/lib/lifeGame/finale";
+import { NextResponse, after } from "next/server";
+import { startTimer } from "@/lib/serverTiming";
+import {
+  createSimulationRun,
+  getLatestSimulationRunForLine,
+  addPoints,
+  updateStudentProfile,
+  isNotConfigured,
+} from "@/lib/db";
+import { getCurrentStudent } from "@/lib/session";
+import { isLineSlug } from "@/lib/lines";
+import { dispatchSimulation } from "@/lib/sims/dispatch";
+import { parseSimResult, creditRecordOf, type SimResult } from "@/lib/sims/types";
+import {
+  readProfile,
+  startingIncome,
+  investableAmount,
+} from "@/lib/studentProfile";
+import type { Student } from "@/lib/types";
+import { SIMULATION_POINTS } from "@/lib/points";
+import { recordCompletionIfDone } from "@/lib/lineCompletion";
+import { outcomeTitleFor } from "@/lib/outcomeTitle";
+
+export const runtime = "nodejs";
+
+/**
+ * Fold a validated result into the student's cross-line profile.
+ *
+ * Switching on `kind` rather than on the line slug is deliberate: the slug
+ * survives a simulation being replaced, the kind does not, so keying off the
+ * kind means a future replacement cannot silently keep feeding the profile a
+ * shape that no longer means what it did. TypeScript narrows `outcome` per
+ * branch, so reading another simulation's field here fails to compile.
+ */
+async function writeProfileContribution(
+  studentId: string,
+  result: SimResult,
+): Promise<void> {
+  switch (result.kind) {
+    case "zhiya_career_choice_v1": {
+      const { interest, pathId, startingIncome } = result.outcome;
+      await updateStudentProfile(studentId, {
+        interest,
+        careerPathId: pathId,
+        monthlyIncome: startingIncome,
+      });
+      return;
+    }
+    case "xiaofei_needs_wants_v1": {
+      // Direction is whether the month absorbed the surprise. The amount is
+      // the shortfall when it did not, and what they deliberately set aside
+      // when it did — "how much did you keep" is the behaviour worth
+      // recording, not the accidental leftover.
+      const { absorbedShortfall, shortfallGap, savings } = result.outcome;
+      await updateStudentProfile(studentId, {
+        savingsBehavior: absorbedShortfall
+          ? { direction: "surplus", amount: Math.max(0, Math.round(savings)) }
+          : {
+              direction: "shortfall",
+              amount: Math.max(0, Math.round(shortfallGap)),
+            },
+      });
+      return;
+    }
+    case "cunqian_savings_v1":
+    case "cunqian_savings_v2": {
+      await updateStudentProfile(studentId, {
+        savingsAmount: Math.max(0, Math.round(result.outcome.user.finalAmount)),
+      });
+      return;
+    }
+    case "xinyong_credit_card_v1":
+    case "xinyong_credit_card_v2": {
+      await updateStudentProfile(studentId, {
+        creditRecord: creditRecordOf(result.outcome),
+      });
+      return;
+    }
+    case "touzi_twse_reflection_v1": {
+      // Same profile fields as the custom simulator writes, so the capstone
+      // and anything else downstream cannot tell which mode produced them —
+      // which is the property that makes flipping the flag safe.
+      await updateStudentProfile(studentId, {
+        hasInvested: result.outcome.hasInvested,
+        investedAmount: Math.max(0, Math.round(result.outcome.investedAmount)),
+      });
+      return;
+    }
+    case "touzi_investing_v1":
+    case "touzi_investing_v2":
+    case "touzi_investing_v3": {
+      // 定存 and 全部花掉 are decisions about the money, but neither is
+      // investing — recording them as such would have the capstone raise an
+      // opportunity-cost question about money that was never at risk.
+      const invested =
+        result.outcome.chosen.id === "buy0050" ||
+        result.outcome.chosen.id === "buy0056";
+      await updateStudentProfile(studentId, {
+        hasInvested: invested,
+        investedAmount: invested ? Math.max(0, Math.round(result.outcome.start)) : 0,
+      });
+      return;
+    }
+    // Every kind that deliberately contributes nothing is listed, so that
+    // adding a kind is a compile error here until someone decides whether it
+    // feeds the profile. A default that returned silently would let a future
+    // contributing kind write nothing and nobody notice.
+    case "qixin_salary_v1":
+    case "xinyong_housing_v1":
+    case "baoshui_tax_v1":
+    case "baoshui_tax_filing_v1":
+    case "zhapian_fraud_v1":
+    case "zhapian_fraud_v2":
+    case "xuedai_student_loan_v1":
+    case "xuedai_student_loan_v2":
+    case "zuwu_lease_v1":
+    case "baoxian_sales_pitch_v1":
+    case "baoxian_sales_pitch_v2":
+    case "chuangye_bubble_tea_v1":
+    case "chuangye_bubble_tea_v2":
+    case "capstone_buy_vs_rent_v1":
+    case "capstone_buy_vs_rent_v2":
+    // Terminal task sets feed nothing to the profile (03 §4; 信用線's
+    // creditRecord now comes from the statement task at station 4).
+    case "xinyong_protect_card_v1":
+    case "qixin_need_want_v1":
+    case "cunqian_savings_rate_v1":
+    case "touzi_crash_v1":
+    case "touzi_etfcode_v1":
+    case "baoxian_fourrisks_v1":
+    case "zhapian_case1_v1":
+    case "zhapian_case2_v1":
+    case "zhapian_case3_v1":
+    case "zhapian_case4_v1":
+    case "zhapian_case5_v1":
+    case "zhapian_case6_v1":
+      return;
+    default: {
+      const unhandled: never = result;
+      throw new Error(`writeProfileContribution: unhandled kind ${String((unhandled as { kind?: string }).kind)}`);
+    }
+  }
+}
+
+export async function POST(req: Request) {
+  const timer = startTimer();
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "invalid_json" }, { status: 400 });
+  }
+
+  const b = (body ?? {}) as Record<string, unknown>;
+  const lineSlug = b.line_slug;
+  if (!isLineSlug(lineSlug)) {
+    return NextResponse.json({ error: "invalid_line" }, { status: 400 });
+  }
+
+  // 消費線 spends the income 職涯線 produced. Resolve it here from the
+  // student's own profile and overwrite whatever the request carried — a
+  // client-supplied income would let anyone hand themselves any budget.
+  let student: Student | null = null;
+  try {
+    student = await timer.time("session", getCurrentStudent());
+  } catch (e) {
+    if (isNotConfigured(e)) {
+      return NextResponse.json(
+        { error: "backend_not_configured" },
+        { status: 503 },
+      );
+    }
+    throw e;
+  }
+  if (!student) {
+    return NextResponse.json({ error: "no_session" }, { status: 401 });
+  }
+  const profile = readProfile(student.profile);
+  // 消費線 spends the income 職涯線 produced; 學貸線 compares repayment
+  // against it. Same figure, same stand-in, same label when it is one.
+  if (lineSlug === "qixin" || lineSlug === "xuedai") {
+    const money = startingIncome(profile);
+    b.income = money.amount;
+    b.incomeFromCareer = money.fromEarnLine;
+  }
+  // 信用線 words its three purchases around what the student said they were
+  // drawn to in 職涯線. Wording only — amounts and interest are identical.
+  if (lineSlug === "xinyong") {
+    b.interest = profile.interest ?? null;
+  }
+  // 投資線 works with what 存錢線 actually produced rather than a fixed
+  // hypothetical. Server-resolved for the same reason as qixin's income: a
+  // client-supplied starting sum would let anyone invest any amount.
+  if (lineSlug === "touzi") {
+    const investable = investableAmount(profile);
+    b.start = investable.amount;
+    // Only read by the linkout mode; harmless and ignored by the custom
+    // simulator, so the injection does not need to know which mode is live.
+    b.fromSavingsLine = investable.fromSavingsLine;
+    b.inShortfall = investable.inShortfall;
+    b.interest = profile.interest ?? null;
+  }
+  // The capstone runs on the student's whole position. Resolved here, with a
+  // documented stand-in for every field they have not earned yet, so a
+  // student who skipped every prior line still gets a real, honest answer
+  // rather than a blocked page.
+  if (lineSlug === "caiwujuece") {
+    // The finale also reads the life-game state (04 §13).
+    const { snap } = await timer.time("capstone", capstoneSnapshot(student));
+    b.income = snap.income.amount;
+    b.savings = snap.savings.amount;
+    b.creditRecord = snap.credit.record;
+    b.investedAmount = snap.invested.amount;
+    b.hasInvested = snap.invested.hasInvested;
+    // Provenance travels with the numbers, so the stored result can say
+    // which were stand-ins long after the recap screen is gone.
+    b.incomeKnown = snap.income.known;
+    b.savingsKnown = snap.savings.known;
+    b.creditKnown = snap.credit.known;
+    b.investedKnown = snap.invested.known;
+    b.behaviorDirection = snap.savingsBehavior.direction;
+    b.behaviorAmount = snap.savingsBehavior.amount;
+    b.behaviorKnown = snap.savingsBehavior.known;
+  }
+
+  // Task scoring context comes from the profile and session, never the body.
+  // A terminal task's attempt number counts its prior results (task_results).
+  const taskSetId = typeof b.taskSetId === "string" ? b.taskSetId : null;
+  // Both reads at once (05 A8.5). The prior run decides simulation points:
+  // they are awarded once per line, so replaying never double-counts.
+  const [priorAttempts, priorRun] = await Promise.all([
+    timer.time("attempts", taskSetId ? countTaskAttempts(student.id, taskSetId) : Promise.resolve(0)),
+    timer.time("prior_run", getLatestSimulationRunForLine(student.id, lineSlug)),
+  ]);
+  const dispatched = dispatchSimulation(lineSlug, b, {
+    goal: profile.goal ? { amount: profile.goal.amount, months: profile.goal.months } : null,
+    studentId: student.id,
+    attempt: priorAttempts + 1,
+  });
+  if (!dispatched.ok) {
+    return NextResponse.json({ error: dispatched.error }, { status: 400 });
+  }
+
+  // Validate the computed result against the shared contract BEFORE it is
+  // stored. A shape that does not match is a bug in the simulation that
+  // produced it, and storing it would hand a row to the coach, the stamp and
+  // the certificate that they cannot read correctly — which is how three
+  // consumers ended up rendering NT$0 figures. Reject loudly instead.
+  const validated = parseSimResult({
+    kind: dispatched.storeInput.kind,
+    outcome: dispatched.storeInput.outcome_summary,
+  });
+  if (!validated.ok) {
+    console.error(
+      `simulation result failed contract validation — line=${lineSlug} kind=${dispatched.storeInput.kind}: ${validated.error}`,
+    );
+    return NextResponse.json({ error: "invalid_result_shape" }, { status: 500 });
+  }
+
+  // A terminal task also names the readiness choice in its reveal (02 §3.4),
+  // and is logged in task_results so attempts and played cases are counted.
+  if (taskSetId) {
+    const out = dispatched.storeInput.outcome_summary as { revealShown?: string };
+    if (typeof out.revealShown === "string") {
+      const shown = await timer.time("reveal", revealWithReadiness(student, out.revealShown, lineSlug));
+      out.revealShown = shown;
+      (dispatched.outcome as { revealShown?: string }).revealShown = shown;
+    }
+  }
+
+  try {
+    // Each line contributes what later lines need to the student profile,
+    // rather than later lines reading back one another's simulation_runs
+    // rows. That is the whole point of the store: 消費 never has to know
+    // 職涯線 exists, and the capstone never has to know any of them do.
+    //
+    // Writes happen here, after contract validation, so a shape that failed
+    // validation can never reach the profile. The switch is exhaustive over
+    // the kinds that contribute; every other kind writes nothing.
+    //
+    // The writes run together; only line completion waits, since it reads
+    // the new run.
+    const o = taskSetId
+      ? (dispatched.storeInput.outcome_summary as unknown as TaskResult & { taskSetId: string })
+      : null;
+    // 10 PERF-1: the run, its attempt row and the points are awaited (the
+    // response carries them); completion, profile and streak go after it.
+    const done = student;
+    const [run, points] = await timer.time("writes", Promise.all([
+      createSimulationRun({ student_id: student.id, ...dispatched.storeInput }),
+      priorRun ? Promise.resolve(student.points_total) : addPoints(student.id, SIMULATION_POINTS),
+      o
+        ? insertTaskResult({
+            student_id: student.id,
+            line_slug: lineSlug,
+            station_id: null,
+            task_set_id: o.taskSetId,
+            kind: dispatched.storeInput.kind,
+            score: o.score,
+            total: o.total,
+            attempt: o.attempt,
+            result: { ...o, kind: dispatched.storeInput.kind },
+          })
+        : null,
+    ]));
+    after(() =>
+      Promise.all([
+        recordCompletionIfDone(done, lineSlug),
+        writeProfileContribution(done.id, validated.result),
+        o ? bumpDailyActivity(done.id, taipeiDay(new Date())) : null,
+      ]),
+    );
+    const pointsTotal = points;
+
+    const res = NextResponse.json({
+      run_id: run.id,
+      line_slug: lineSlug,
+      outcome: dispatched.outcome,
+      outcome_title: outcomeTitleFor(run),
+      points_total: pointsTotal,
+      points_awarded: priorRun ? 0 : SIMULATION_POINTS,
+    });
+    res.headers.set("Server-Timing", timer.header());
+    return res;
+  } catch (e) {
+    if (isNotConfigured(e)) {
+      return NextResponse.json(
+        { error: "backend_not_configured" },
+        { status: 503 },
+      );
+    }
+    console.error("simulation post failed", e);
+    return NextResponse.json({ error: "server_error" }, { status: 500 });
+  }
+}

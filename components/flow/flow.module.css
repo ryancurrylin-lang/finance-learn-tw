@@ -1,0 +1,473 @@
+/*
+  06 E8.2 to E8.5: the station flow on the Part E frame. A screen is
+  [top bar][rail][body: flex 1][action zone]; the page never scrolls, only a
+  document region does (E3). Screens slide in 24px over 200ms; under reduced
+  motion they only fade (E12).
+*/
+.flow {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.screen {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  animation: enter 200ms var(--ease-out) both;
+}
+.screen[data-dir="back"] {
+  animation-name: enterBack;
+}
+@keyframes enter {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+@keyframes enterBack {
+  from {
+    opacity: 0;
+    transform: translateX(-24px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .screen,
+  .screen[data-dir="back"] {
+    animation: fade 120ms linear both;
+  }
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+
+/* The body region between the rail and the action zone. */
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  flex: 1;
+  min-height: 0;
+  padding: var(--s-4) var(--gutter) 0;
+}
+.bodyCenter {
+  justify-content: center;
+}
+.scrollRegion {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+  padding-bottom: var(--s-5);
+}
+.inner {
+  width: 100%;
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+/* ---------- hook: one glass card in the middle (2026-10-24) ---------- */
+.hookBody {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  flex: 1;
+  min-height: 0;
+  padding: var(--s-4) var(--gutter) max(var(--s-4), env(safe-area-inset-bottom));
+}
+.hookSheet {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  width: 100%;
+  max-width: 640px;
+  max-height: 100%;
+  box-sizing: border-box;
+  margin: 0 auto;
+  padding: var(--s-5);
+  border-radius: var(--r-xl);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  box-shadow: var(--e2);
+  animation: sheetIn var(--dur-soft) var(--spring-soft) both;
+}
+@keyframes sheetIn {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hookSheet {
+    animation: fade 120ms linear both;
+  }
+}
+.sheetScroll {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Native radio rows (work before the script loads, 05 A8.6), drawn as the
+   E7.4 option row. */
+.nativeOpts {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.nativeOpt {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 56px;
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  font: 500 1.0625rem/1.5rem var(--font-ui);
+  cursor: pointer;
+  transition: transform var(--dur-press) var(--spring-snappy);
+}
+.nativeOpt:active {
+  transform: scale(0.985);
+}
+.nativeOpt input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.nativeOpt:has(input:checked) {
+  background: var(--surface);
+  box-shadow: inset 0 0 0 2px var(--ink);
+}
+.nativeOpt:has(input:focus-visible) {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+.nativeRadio {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 2px var(--hairline-strong);
+  color: transparent;
+}
+.nativeOpt:has(input:checked) .nativeRadio {
+  background: var(--ink);
+  box-shadow: none;
+  color: var(--ink-inv);
+}
+
+/* ---------- the brief as a task ticket ---------- */
+.ticket {
+  display: flex;
+  flex-direction: column;
+}
+.ticketStub {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: -18px;
+  padding: 14px 20px 32px 30px;
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  background: var(--sign);
+  color: var(--sign-ink);
+  overflow: hidden;
+}
+.ticketStripe {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  background: var(--line);
+}
+.ticketKicker {
+  font: 800 0.75rem/1 var(--font-ui);
+  letter-spacing: 0.14em;
+  color: var(--board-amber);
+}
+.ticketWhere {
+  font: 700 0.875rem/1.2 var(--font-ui);
+  letter-spacing: 0.04em;
+  color: var(--sign-ink);
+}
+.ticket > section {
+  position: relative;
+}
+
+/* ---------- task (E8.4) ---------- */
+.counter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+}
+.legend {
+  margin: 0;
+  font: 400 0.75rem/1.125rem var(--font-ui);
+  color: var(--ink-3);
+}
+.prompt {
+  margin: 0;
+  font: 700 1.375rem/2rem var(--font-voice);
+  color: var(--ink);
+  text-wrap: balance;
+}
+.problem {
+  margin: 0;
+  min-height: 1.125rem;
+  text-align: center;
+  font: 500 0.8125rem/1.125rem var(--font-ui);
+  color: var(--bad);
+}
+.split {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  flex: 1;
+  min-height: 0;
+}
+.docPane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  flex: 1;
+  min-height: 0;
+}
+.qPane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+@media (min-width: 840px) {
+  .split {
+    flex-direction: row;
+    justify-content: center;
+    align-items: stretch;
+    gap: 28px;
+    padding: 0 var(--s-8) var(--s-4);
+  }
+  .docPane {
+    flex: 0 1 600px;
+    padding: var(--s-5);
+    border-radius: var(--r-xl);
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    box-shadow: var(--e2);
+  }
+  .qPane {
+    flex: 0 0 420px;
+    justify-content: center;
+    padding: var(--s-5);
+    border-radius: var(--r-xl);
+    background: var(--glass);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-edge);
+    box-shadow: var(--glass-shadow);
+  }
+  .phoneOnly {
+    display: none;
+  }
+}
+@media (max-width: 839px) {
+  .regularOnly {
+    display: none;
+  }
+}
+
+/* ---------- score, answers, reveal (E8.5) ---------- */
+.scoreNum {
+  margin: 0;
+  font: 700 2.5rem/1 var(--font-ui);
+  font-variant-numeric: tabular-nums;
+}
+.scoreTotal {
+  font-size: 1.25rem;
+  color: var(--ink-3);
+}
+.verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 700 0.9375rem/1.375rem var(--font-ui);
+}
+.verdictGood {
+  color: var(--good);
+}
+.verdictPart {
+  color: var(--warn);
+}
+.revealStage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-2);
+  text-align: center;
+}
+.revealBias {
+  margin: 0;
+  font: 700 2.125rem/2.75rem var(--font-voice);
+  text-wrap: balance;
+}
+.revealText {
+  margin: 0;
+  font: 400 1.0625rem/1.75rem var(--font-ui);
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+.tool {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  text-align: left;
+}
+.toolBadge {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-sm);
+  background: var(--line-soft);
+  color: var(--line-ink);
+  font: 700 1rem/1 var(--font-ui);
+}
+.toolName {
+  margin: 0;
+  font: 700 1.0625rem/1.5rem var(--font-ui);
+}
+.toolSummary {
+  margin: 0;
+  font: 400 0.75rem/1.125rem var(--font-ui);
+  color: var(--ink-3);
+}
+/* 回報錯誤 under a model answer: plain, quiet, a full 44px target. */
+.report {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  margin-top: var(--s-2);
+  font: 500 0.8125rem/1.25rem var(--font-ui);
+  color: var(--ink-3);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.report:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+/* 06 G1 看提示 and G2 the compare screen */
+.hintBtn {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--focus);
+  font: 600 0.9375rem/1.25rem var(--font-ui);
+  cursor: pointer;
+}
+.hintBtn:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+.hintSheet {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding-top: var(--s-3);
+}
+.compareHead {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  margin-bottom: var(--s-4);
+}
+.block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  margin-bottom: var(--s-5);
+}
+.blockTitle {
+  margin: 0;
+  font: 800 1.0625rem/1.5rem var(--font-ui);
+}
+.goodList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.goodList li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+  font: 500 0.9375rem/1.5rem var(--font-ui);
+}
+.goodList li svg {
+  flex: none;
+  margin-top: 3px;
+  color: var(--good);
+}
+.thinkItem {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+.oneWay {
+  margin: 0;
+  font: 500 0.875rem/1.25rem var(--font-ui);
+  color: var(--ink-3);
+}
+.cardLink {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  font: 600 0.9375rem/1 var(--font-ui);
+  color: var(--ink-2);
+}
+
+/* ---------- Regular width (E3, E8.4) ---------- */
+@media (min-width: 840px) {
+  .actions {
+    width: 100%;
+    max-width: 600px;
+    margin: 0 auto;
+    box-sizing: border-box;
+  }
+  /* The button sits under the 420px question pane, right of the 600px document. */
+  .splitActions {
+    width: 100%;
+    max-width: calc(600px + 28px + 420px + 2 * var(--gutter));
+    margin: 0 auto;
+    padding-left: calc(600px + 28px + var(--gutter));
+    box-sizing: border-box;
+  }
+}
